@@ -24,7 +24,7 @@ use crate::result::{HookDecision, StopHookOutcome};
 
 use super::{
     GateHookJson, GateKind, HookRunnerResult, RunContext, StopHookJson, gate_json_to_decision,
-    stop_json_to_outcome,
+    parse_observe_effects, stop_json_to_outcome,
 };
 
 /// Maximum bytes to capture from hook stdout or stderr (64 KB).
@@ -309,16 +309,21 @@ pub async fn run_command_hook(
 
             match mode {
                 GateKind::Observe => {
-                    if exit_code == 0 {
-                        return (HookRunnerResult::Success, elapsed);
+                    if exit_code != 0 {
+                        return (
+                            HookRunnerResult::Failed(append_stderr_line(
+                                &format!("exit code {exit_code}"),
+                                &stderr,
+                            )),
+                            elapsed,
+                        );
                     }
-                    (
-                        HookRunnerResult::Failed(append_stderr_line(
-                            &format!("exit code {exit_code}"),
-                            &stderr,
-                        )),
-                        elapsed,
-                    )
+                    let effects = parse_observe_effects(stdout.as_bytes());
+                    if effects.is_empty() {
+                        (HookRunnerResult::Success, elapsed)
+                    } else {
+                        (HookRunnerResult::Observe { effects }, elapsed)
+                    }
                 }
                 GateKind::Tool => {
                     parse_blocking_result(&stdout, &stderr, exit_code, &spec.name, elapsed)
@@ -1221,6 +1226,22 @@ mod tests {
     }
 
     #[test]
+    fn observe_json_harvests_session_title_and_allowlisted_osc() {
+        let effects = super::parse_observe_effects(
+            br#"{"hookSpecificOutput":{"sessionTitle":"parked-arx-console","terminalSequence":"\u001b]0;parked-arx-console\u0007"}}"#,
+        );
+        assert_eq!(effects.session_title.as_deref(), Some("parked-arx-console"));
+        assert!(effects.terminal_sequence.as_deref().unwrap().starts_with("\u{1b}]0;"));
+
+        let rejected = super::parse_observe_effects(
+            br#"{"hookSpecificOutput":{"terminalSequence":"\u001b]52;c;QUFB\u0007"}}"#,
+        );
+        assert!(rejected.terminal_sequence.is_none());
+        let empty = super::parse_observe_effects(b"not json");
+        assert!(empty.is_empty());
+    }
+
+    #[test]
     fn stop_allow_failure_and_unknown_decision() {
         let (result, _) = parse_stop_result("", "", 0, "s", Duration::ZERO);
         assert!(stop_outcome(result).is_empty());
@@ -1264,6 +1285,7 @@ mod tests {
                 force_stop: Some(crate::result::StopOverride {
                     reason: Some("user said stop".into()),
                 }),
+                ..Default::default()
             }
         );
     }

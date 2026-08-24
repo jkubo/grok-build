@@ -229,6 +229,7 @@ pub(super) fn handle_session_notification_with_origin(
     let mut terminal_outcome: Option<super::super::turn_completion::TerminalApply> = None;
     let mut deferred_subagent_finish: Option<SessionNotification> = None;
     let root_session_id: &str = session_notif.session_id.0.as_ref();
+    let mut hook_terminal_sequence = None;
     let changed = match session_notif.update {
         ref update @ (XaiSessionUpdate::AutoCompactStarted { .. }
         | XaiSessionUpdate::AutoCompactCompleted { .. }
@@ -979,6 +980,10 @@ pub(super) fn handle_session_notification_with_origin(
             }
             true
         }
+        XaiSessionUpdate::TerminalSequence { sequence } => {
+            hook_terminal_sequence = Some(sequence);
+            true
+        }
         XaiSessionUpdate::LastTurnSummary {
             summary,
             prompt_id: _,
@@ -1246,6 +1251,9 @@ pub(super) fn handle_session_notification_with_origin(
         }
     };
     let mut changed = changed;
+    if let Some(sequence) = hook_terminal_sequence {
+        app.notification_service.emit_hook_sequence(&sequence);
+    }
     if status_snapshot_applied && is_active {
         app.refresh_status_line_now();
         changed |= app.status_line.take_changed();

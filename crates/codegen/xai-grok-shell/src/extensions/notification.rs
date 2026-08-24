@@ -592,6 +592,12 @@ pub enum SessionUpdate {
         /// The generated session summary/title
         session_summary: String,
     },
+    /// Hook-requested terminal escape (OSC 0/9/99/777 or BEL). Transient:
+    /// the pager writes it; it is not persisted. Must already be allowlisted
+    /// (`xai_grok_hooks::terminal_sequence::sanitize_terminal_sequence`).
+    TerminalSequence {
+        sequence: String,
+    },
     /// A short "where was I" recap of the session so far.
     ///
     /// Emitted by the `x.ai/recap` ext method: on demand via the `/recap`

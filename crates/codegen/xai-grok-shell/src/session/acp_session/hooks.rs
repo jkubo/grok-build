@@ -393,11 +393,11 @@ impl SessionActor {
                     elapsed,
                     http_info: None,
                 },
-                (None, None) => HookRunResult::Success {
-                    hook_name: hook_name.clone(),
+                (None, None) => HookRunResult::success(
+                    hook_name.clone(),
                     elapsed,
-                    http_info: None,
-                },
+                    None,
+                ),
             });
 
             out.absorb(
@@ -408,6 +408,8 @@ impl SessionActor {
                     additional_context: response
                         .additional_context
                         .filter(|c| !c.trim().is_empty()),
+                    session_title: None,
+                    terminal_sequence: None,
                 },
             );
         }

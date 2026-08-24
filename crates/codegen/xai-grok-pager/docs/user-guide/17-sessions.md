@@ -133,6 +133,14 @@ Rename the current session's title:
 
 Alias: `/title`. `/rename --auto` clears a manual title and re-enables auto-titling.
 
+From a script or another process (disk + `/resume`; a live pager also needs the
+hook `sessionTitle` path or a TUI `/rename`):
+
+```
+grok sessions rename <session-id> parked-arx-console
+grok sessions rename <session-id> --reset-to-auto
+```
+
 ---
 
 ## The /rewind Command

@@ -32,6 +32,10 @@ pub enum HookRunnerResult {
     },
     Stop(StopHookOutcome),
     Success,
+    /// Observe-mode JSON asked the host to rename and/or emit OSC.
+    Observe {
+        effects: crate::result::HookEffects,
+    },
     /// Failed: the caller fails open.
     Failed(String),
 }
@@ -53,6 +57,13 @@ pub(crate) struct GateHookJson {
 pub(crate) struct GateHookSpecificOutputJson {
     #[serde(default, rename = "updatedInput")]
     pub updated_input: Option<serde_json::Value>,
+    /// Harvested on observe/Stop, not PreToolUse.
+    #[serde(default, rename = "sessionTitle")]
+    #[allow(dead_code)]
+    pub session_title: Option<String>,
+    #[serde(default, rename = "terminalSequence")]
+    #[allow(dead_code)]
+    pub terminal_sequence: Option<String>,
 }
 
 impl GateHookJson {
@@ -120,6 +131,10 @@ pub(crate) struct StopHookJson {
 pub(crate) struct StopHookSpecificOutputJson {
     #[serde(default, rename = "additionalContext")]
     pub additional_context: Option<String>,
+    #[serde(default, rename = "sessionTitle")]
+    pub session_title: Option<String>,
+    #[serde(default, rename = "terminalSequence")]
+    pub terminal_sequence: Option<String>,
 }
 
 /// Interpret a [`StopHookJson`] as a [`StopHookOutcome`].
@@ -144,16 +159,54 @@ pub(crate) fn stop_json_to_outcome(
             ));
         }
     };
+    let output = json.hook_specific_output.unwrap_or_default();
     Ok(StopHookOutcome {
         block_reason,
-        additional_context: json
-            .hook_specific_output
-            .and_then(|output| output.additional_context)
+        additional_context: output
+            .additional_context
             .filter(|context| !context.trim().is_empty()),
         force_stop: (json.continue_ == Some(false)).then_some(crate::result::StopOverride {
             reason: json.stop_reason,
         }),
+        session_title: output
+            .session_title
+            .filter(|title| !title.trim().is_empty()),
+        terminal_sequence: output
+            .terminal_sequence
+            .as_deref()
+            .and_then(crate::terminal_sequence::sanitize_terminal_sequence),
     })
+}
+
+/// Harvest Claude-shaped observe JSON: `hookSpecificOutput.sessionTitle`
+/// and `hookSpecificOutput.terminalSequence`. Malformed stdout is empty
+/// effects (observe never fails closed on JSON).
+pub(crate) fn parse_observe_effects(stdout: &[u8]) -> crate::result::HookEffects {
+    #[derive(serde::Deserialize)]
+    struct ObserveJson {
+        #[serde(default, rename = "hookSpecificOutput")]
+        hook_specific_output: Option<ObserveSpecific>,
+    }
+    #[derive(serde::Deserialize, Default)]
+    struct ObserveSpecific {
+        #[serde(default, rename = "sessionTitle")]
+        session_title: Option<String>,
+        #[serde(default, rename = "terminalSequence")]
+        terminal_sequence: Option<String>,
+    }
+    let Ok(json) = serde_json::from_slice::<ObserveJson>(stdout) else {
+        return crate::result::HookEffects::default();
+    };
+    let output = json.hook_specific_output.unwrap_or_default();
+    crate::result::HookEffects {
+        session_title: output
+            .session_title
+            .filter(|title| !title.trim().is_empty()),
+        terminal_sequence: output
+            .terminal_sequence
+            .as_deref()
+            .and_then(crate::terminal_sequence::sanitize_terminal_sequence),
+    }
 }
 
 /// Each runner returns the result, wall-clock duration, and optional HTTP

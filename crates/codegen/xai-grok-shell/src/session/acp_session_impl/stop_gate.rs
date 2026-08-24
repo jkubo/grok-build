@@ -101,11 +101,7 @@ pub(super) fn demote_ignored_blocks(
                 elapsed,
                 http_info,
                 ..
-            } => HookRunResult::Success {
-                hook_name,
-                elapsed,
-                http_info,
-            },
+            } => HookRunResult::success(hook_name, elapsed, http_info),
             other => other,
         })
         .collect()
@@ -312,6 +308,14 @@ impl SessionActor {
         if let Some(registry) = registry {
             let ctx = self.hook_run_ctx();
             result = dispatcher::dispatch_stop(&registry, event, &envelope, &ctx).await;
+            if let Some(title) = result.session_title.clone() {
+                self.apply_hook_session_title(&title).await;
+            }
+            if let Some(sequence) = result.terminal_sequence.clone() {
+                self.send_xai_notification_transient(
+                    crate::extensions::notification::SessionUpdate::TerminalSequence { sequence },
+                );
+            }
         }
 
         if let Some(prevent) = result.prevent_continuation.take() {

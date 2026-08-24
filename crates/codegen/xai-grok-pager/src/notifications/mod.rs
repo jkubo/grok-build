@@ -101,6 +101,12 @@ impl NotificationService {
     /// [`should_suppress_permission_notification`] first and call
     /// [`mark_permission_notified`] after a successful emit to avoid
     /// repeated bells during concurrent permission requests.
+    /// Write a hook `terminalSequence` (already allowlisted in the shell).
+    /// Bypasses the focus gate: the hook asked for this exact OSC.
+    pub fn emit_hook_sequence(&self, sequence: &str) {
+        protocol::emit_raw_sequence(sequence, self.terminal_ctx);
+    }
+
     pub fn notify(&self, event: NotificationEvent) {
         if !self.is_event_enabled(&event.kind) {
             return;

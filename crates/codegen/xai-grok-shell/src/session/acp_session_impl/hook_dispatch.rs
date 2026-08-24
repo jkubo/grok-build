@@ -2,6 +2,7 @@
 //! notifications and telemetry, and turn/tool outcome mapping.
 
 use super::*;
+use crate::session::storage::StorageAdapter;
 
 /// Map a turn result to the hub protocol's `TurnHookOutcome`.
 pub(super) fn turn_result_to_hook_outcome(
@@ -248,10 +249,65 @@ impl SessionActor {
         let results =
             xai_grok_hooks::dispatcher::dispatch_non_blocking(&registry, event, &envelope, &ctx)
                 .await;
+        self.apply_hook_observe_effects(&results).await;
         self.send_hook_execution(&event.to_string(), tool_name, prompt_id, &results)
             .await;
         self.emit_hook_executed_telemetry(&event.to_string(), tool_name, &results)
             .await;
+    }
+
+    /// Apply `sessionTitle` / `terminalSequence` harvested from observe or
+    /// stop hooks. Last non-empty title/sequence wins.
+    pub(super) async fn apply_hook_observe_effects(
+        &self,
+        results: &[xai_grok_hooks::result::HookRunResult],
+    ) {
+        let mut title = None;
+        let mut sequence = None;
+        for result in results {
+            let effects = result.observe_effects();
+            if effects.session_title.is_some() {
+                title = effects.session_title;
+            }
+            if effects.terminal_sequence.is_some() {
+                sequence = effects.terminal_sequence;
+            }
+        }
+        if let Some(title) = title {
+            self.apply_hook_session_title(&title).await;
+        }
+        if let Some(sequence) = sequence {
+            self.send_xai_notification_transient(XaiSessionUpdate::TerminalSequence { sequence });
+        }
+    }
+
+    pub(super) async fn apply_hook_session_title(&self, raw: &str) {
+        let Some(title) = crate::session::persistence::sanitize_and_cap_title(raw) else {
+            return;
+        };
+        let storage = crate::session::storage::jsonl::JsonlStorageAdapter::default();
+        if let Err(e) = storage
+            .update_session_title(&self.session_info, title.clone())
+            .await
+        {
+            tracing::warn!(error = %e, "hook sessionTitle persist failed");
+            return;
+        }
+        let _ = self
+            .notifications
+            .persistence_tx
+            .send(PersistenceMsg::ManualTitleRenamed(title.clone()));
+        self.on_title_renamed(true);
+        let extra = crate::extensions::notification::title_is_manual_meta()
+            .as_object()
+            .cloned();
+        self.send_xai_notification_with_extra_meta(
+            XaiSessionUpdate::SessionSummaryGenerated {
+                session_summary: title,
+            },
+            extra,
+        )
+        .await;
     }
 
     pub(super) async fn emit_hook_executed_telemetry(

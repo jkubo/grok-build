@@ -13,7 +13,8 @@ use crate::event::HookEventEnvelope;
 use crate::result::{HookDecision, HttpInfo, StopHookOutcome};
 
 use super::{
-    GateKind, HookRunOutput, HookRunnerResult, RunContext, StopHookJson, stop_json_to_outcome,
+    GateKind, HookRunOutput, HookRunnerResult, RunContext, StopHookJson, parse_observe_effects,
+    stop_json_to_outcome,
 };
 
 const RESPONSE_PREVIEW_MAX: usize = 200;
@@ -256,15 +257,32 @@ pub async fn run_http_hook(
     );
 
     if mode == GateKind::Observe {
-        let http_info = Some(make_info(Some(status_code), None));
-        if status.is_success() {
-            return (HookRunnerResult::Success, elapsed, http_info);
+        if !status.is_success() {
+            return (
+                HookRunnerResult::Failed(format!("HTTP status {}", status)),
+                elapsed,
+                Some(make_info(Some(status_code), None)),
+            );
         }
-        return (
-            HookRunnerResult::Failed(format!("HTTP status {}", status)),
-            elapsed,
-            http_info,
-        );
+        let response_text = match response.text().await {
+            Ok(t) => t,
+            Err(_) => String::new(),
+        };
+        let effects = parse_observe_effects(response_text.as_bytes());
+        let http_info = Some(make_info(
+            Some(status_code),
+            if response_text.trim().is_empty() {
+                None
+            } else {
+                Some(truncate_preview(&response_text))
+            },
+        ));
+        let result = if effects.is_empty() {
+            HookRunnerResult::Success
+        } else {
+            HookRunnerResult::Observe { effects }
+        };
+        return (result, elapsed, http_info);
     }
 
     let response_text = match response.text().await {

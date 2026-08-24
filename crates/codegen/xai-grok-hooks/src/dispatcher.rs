@@ -139,11 +139,11 @@ pub async fn dispatch_pre_tool_use(
                         input,
                     });
                 }
-                run_results.push(HookRunResult::Success {
-                    hook_name: spec.name.clone(),
+                run_results.push(HookRunResult::success(
+                    spec.name.clone(),
                     elapsed,
                     http_info,
-                });
+                ));
             }
             HookRunnerResult::Failed(err) => {
                 // `hook_failure` (not `error`) on purpose: failure detail can
@@ -163,17 +163,19 @@ pub async fn dispatch_pre_tool_use(
                     http_info,
                 });
             }
-            HookRunnerResult::Success | HookRunnerResult::Stop(_) => {
+            HookRunnerResult::Success
+            | HookRunnerResult::Stop(_)
+            | HookRunnerResult::Observe { .. } => {
                 tracing::info!(
                     hook_name = %spec.name,
                     elapsed_ms = elapsed.as_millis() as u64,
                     "hook completed"
                 );
-                run_results.push(HookRunResult::Success {
-                    hook_name: spec.name.clone(),
+                run_results.push(HookRunResult::success(
+                    spec.name.clone(),
                     elapsed,
                     http_info,
-                });
+                ));
             }
         }
     }
@@ -200,6 +202,10 @@ pub struct StopDispatchResult {
     /// First `continue: false` wins and overrides any blocks.
     pub prevent_continuation: Option<StopBlock>,
     pub results: Vec<HookRunResult>,
+    /// Last non-empty `sessionTitle` from a stop hook.
+    pub session_title: Option<String>,
+    /// Last allowlisted `terminalSequence` from a stop hook.
+    pub terminal_sequence: Option<String>,
 }
 
 impl StopDispatchResult {
@@ -228,6 +234,12 @@ impl StopDispatchResult {
         if let Some(context) = signals.additional_context {
             self.additional_context.push(context);
         }
+        if let Some(title) = signals.session_title {
+            self.session_title = Some(title);
+        }
+        if let Some(seq) = signals.terminal_sequence {
+            self.terminal_sequence = Some(seq);
+        }
     }
 }
 
@@ -238,6 +250,8 @@ pub struct StopSignals {
     pub block_reason: Option<String>,
     pub stop_reason: Option<String>,
     pub additional_context: Option<String>,
+    pub session_title: Option<String>,
+    pub terminal_sequence: Option<String>,
 }
 
 /// Scrollback detail for a stop signal, shared by the file and client gates so
@@ -334,6 +348,8 @@ pub async fn dispatch_stop(
                         hook_name: spec.name.clone(),
                         elapsed,
                         http_info,
+                        session_title: outcome.session_title.clone(),
+                        terminal_sequence: outcome.terminal_sequence.clone(),
                     }),
                 }
                 out.absorb(
@@ -346,6 +362,8 @@ pub async fn dispatch_stop(
                                 .unwrap_or_else(|| "stopped by hook".to_string())
                         }),
                         additional_context: outcome.additional_context,
+                        session_title: outcome.session_title,
+                        terminal_sequence: outcome.terminal_sequence,
                     },
                 );
             }
@@ -367,12 +385,13 @@ pub async fn dispatch_stop(
             }
             HookRunnerResult::Success
             | HookRunnerResult::Allow { .. }
-            | HookRunnerResult::Deny { .. } => {
-                out.results.push(HookRunResult::Success {
-                    hook_name: spec.name.clone(),
+            | HookRunnerResult::Deny { .. }
+            | HookRunnerResult::Observe { .. } => {
+                out.results.push(HookRunResult::success(
+                    spec.name.clone(),
                     elapsed,
                     http_info,
-                });
+                ));
             }
         }
     }
@@ -425,10 +444,24 @@ pub async fn dispatch_non_blocking(
                     elapsed_ms = elapsed.as_millis() as u64,
                     "hook completed"
                 );
+                results.push(HookRunResult::success(
+                    spec.name.clone(),
+                    elapsed,
+                    http_info,
+                ));
+            }
+            HookRunnerResult::Observe { effects } => {
+                tracing::info!(
+                    hook_name = %spec.name,
+                    elapsed_ms = elapsed.as_millis() as u64,
+                    "hook completed with observe effects"
+                );
                 results.push(HookRunResult::Success {
                     hook_name: spec.name.clone(),
                     elapsed,
                     http_info,
+                    session_title: effects.session_title,
+                    terminal_sequence: effects.terminal_sequence,
                 });
             }
             HookRunnerResult::Failed(err) => {
@@ -455,11 +488,11 @@ pub async fn dispatch_non_blocking(
                     elapsed_ms = elapsed.as_millis() as u64,
                     "hook completed"
                 );
-                results.push(HookRunResult::Success {
-                    hook_name: spec.name.clone(),
+                results.push(HookRunResult::success(
+                    spec.name.clone(),
                     elapsed,
                     http_info,
-                });
+                ));
             }
         }
     }

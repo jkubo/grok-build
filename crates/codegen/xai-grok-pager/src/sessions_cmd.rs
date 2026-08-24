@@ -31,6 +31,17 @@ enum SessionsCommand {
         /// Session id to delete.
         id: String,
     },
+    /// Rename a session title (pins `title_is_manual`, same as `/rename`)
+    Rename {
+        /// Session id to rename.
+        id: String,
+        /// New title. Join remaining words. Required unless `--reset-to-auto`.
+        #[arg(trailing_var_arg = true)]
+        title: Vec<String>,
+        /// Unpin a manual title so automatic titling resumes (`/rename --auto`).
+        #[arg(long, conflicts_with = "title")]
+        reset_to_auto: bool,
+    },
 }
 
 pub async fn run(args: SessionsArgs, agent_config: &AgentConfig) -> Result<()> {
@@ -205,6 +216,37 @@ pub async fn run(args: SessionsArgs, agent_config: &AgentConfig) -> Result<()> {
                 println!("Deleted session {id}");
             } else {
                 println!("No session found with id {id}.");
+            }
+        }
+        SessionsCommand::Rename {
+            id,
+            title,
+            reset_to_auto,
+        } => {
+            let title_arg = if reset_to_auto {
+                None
+            } else {
+                let joined = title.join(" ");
+                if joined.trim().is_empty() {
+                    anyhow::bail!("Usage: grok sessions rename <id> <title> | --reset-to-auto");
+                }
+                Some(joined)
+            };
+            let root = grok_home();
+            let outcome = xai_grok_shell::session::cli_rename::rename_session_in(
+                root,
+                &id,
+                title_arg.as_deref(),
+            )
+            .await?;
+            if outcome.reset {
+                println!("Reset session {} title to auto", outcome.session_id);
+            } else {
+                println!(
+                    "Renamed session {} to \"{}\"",
+                    outcome.session_id,
+                    outcome.title.as_deref().unwrap_or("")
+                );
             }
         }
     }
