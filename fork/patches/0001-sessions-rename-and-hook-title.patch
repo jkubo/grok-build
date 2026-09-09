@@ -1,0 +1,1358 @@
+From a9bfe6dfc10e0ddb0bfd52dd5a8b6ef3040054b3 Mon Sep 17 00:00:00 2001
+From: claudeus <claudeus@kub0.ai>
+Date: Wed, 9 Sep 2026 11:20:54 +0900
+Subject: [PATCH] Add sessions rename CLI and hook
+ sessionTitle/terminalSequence.
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Local fork only — upstream does not accept PRs. grok sessions rename
+pins title_is_manual on disk (same storage path as x.ai/session/rename).
+Hooks may return Claude-shaped sessionTitle + allowlisted OSC (0/1/2/9/99/777, BEL);
+the pager writes the sequence (no /dev/tty). /rename --auto stays unpin.
+
+Rebased onto upstream/main 7581004. HookRunResult::Success gained
+session_title/terminal_sequence, so every 4-field construction site now uses
+the with_message() ctor — including the PostToolUse sites upstream added since.
+HookRunnerResult::Observe joins the Success/Stop catch-all arms alongside
+upstream's PostToolUse. protocol.rs gains the std::io::Write import that
+emit_raw_sequence needs.
+
+Co-Authored-By: Grokus <grokus@kub0.ai>
+Co-Authored-By: Claudeus <claudeus@kub0.ai>
+---
+ FORK.md                                       |  57 +++++++
+ .../codegen/xai-grok-hooks/src/dispatcher.rs  | 110 ++++++++-----
+ crates/codegen/xai-grok-hooks/src/lib.rs      |   1 +
+ crates/codegen/xai-grok-hooks/src/result.rs   |  56 +++++++
+ .../xai-grok-hooks/src/runner/command.rs      |  32 +++-
+ .../codegen/xai-grok-hooks/src/runner/http.rs |  11 +-
+ .../codegen/xai-grok-hooks/src/runner/mod.rs  |  61 +++++++-
+ .../xai-grok-hooks/src/terminal_sequence.rs   |  72 +++++++++
+ .../docs/user-guide/04-slash-commands.md      |   2 +
+ .../docs/user-guide/10-hooks.md               |   2 +
+ .../docs/user-guide/17-sessions.md            |   8 +
+ .../app/acp_handler/session_notification.rs   |   8 +
+ .../xai-grok-pager/src/notifications/mod.rs   |   6 +
+ .../src/notifications/protocol.rs             |  22 +++
+ .../xai-grok-pager/src/sessions_cmd.rs        |  42 +++++
+ .../src/extensions/notification.rs            |   6 +
+ crates/codegen/xai-grok-shell/src/lib.rs      |   1 +
+ .../src/session/acp_session/hooks.rs          |  22 +--
+ .../session/acp_session_impl/hook_dispatch.rs |  57 +++++++
+ .../post_tool_use_delivery.rs                 |   1 +
+ .../post_tool_use_delivery_tests.rs           |   7 +-
+ .../src/session/acp_session_impl/stop_gate.rs |  10 ++
+ .../tool_layer_images_bridge_tests.rs         |   1 +
+ .../xai-grok-shell/src/session/cli_rename.rs  | 146 ++++++++++++++++++
+ .../codegen/xai-grok-shell/src/session/mod.rs |   1 +
+ 25 files changed, 679 insertions(+), 63 deletions(-)
+ create mode 100644 FORK.md
+ create mode 100644 crates/codegen/xai-grok-hooks/src/terminal_sequence.rs
+ create mode 100644 crates/codegen/xai-grok-shell/src/session/cli_rename.rs
+
+diff --git a/FORK.md b/FORK.md
+new file mode 100644
+index 0000000..f8f50f4
+--- /dev/null
++++ b/FORK.md
+@@ -0,0 +1,57 @@
++# jkubo fork of grok-build
++
++Personal fork of [`xai-org/grok-build`](https://github.com/xai-org/grok-build).
++Upstream **does not accept external PRs** (`CONTRIBUTING.md`). This tree is
++for local builds and the two session-title gaps Claude Code already has:
++
++1. **`grok sessions rename <id> <title>`** — persist a manual title (or
++   `--reset-to-auto`) the same way `x.ai/session/rename` does on disk.
++2. **Hook `sessionTitle` + `terminalSequence`** — Claude-shaped
++   `hookSpecificOutput` so `/autoname` can live-update the TUI and tab
++   title without writing `/dev/tty`. `--auto` stays unpin; it is **not**
++   an invent verb.
++
++Do not open a PR against `xai-org/grok-build`. There is no public issue
++tracker on the upstream repo either.
++
++## Branches
++
++| Branch | Meaning |
++|--------|---------|
++| `main` | Fast-forward mirror of `xai-org/grok-build` `main`. No fork delta. |
++| `jkubo` | Default. Latest upstream **plus** the session-title patch and this tooling. |
++
++Product delta (replayable if rebase conflicts): `fork/patches/` listed in
++`fork/series`.
++
++## Keep current
++
++```sh
++./scripts/sync-upstream.sh                 # fetch + rebase onto upstream/main
++./scripts/sync-upstream.sh --push          # also update origin/jkubo + origin/main
++./scripts/sync-upstream.sh --build --install
++```
++
++Happy path is `git rebase` of the `jkubo` commits onto `upstream/main`. If
++that conflicts, the script `git am --3way`s `fork/patches/` and restores
++this tooling. If both fail it aborts and leaves `jkubo` where it was.
++
++Version stamp: `GROK_VERSION=<pager-bin-version>-jkubo` (e.g. `1.0.8-jkubo`).
++
++After a **manual** conflict resolution, refresh the product patch:
++
++```sh
++git format-patch -1 <product-commit> --stdout > fork/patches/0001-sessions-rename-and-hook-title.patch
++```
++
++### Automation
++
++- **GitHub Actions** (`.github/workflows/sync-upstream.yml`): daily rebase +
++  push; runs the rename/hook unit tests. Does not install on this machine.
++- **Local timer** (rebuilds `~/.local/bin/grok-jkubo` when HEAD moved):
++
++```sh
++./scripts/install-sync-timer.sh
++```
++
++A running TUI keeps the old ELF until you `/quit` and start `grok` again.
+diff --git a/crates/codegen/xai-grok-hooks/src/dispatcher.rs b/crates/codegen/xai-grok-hooks/src/dispatcher.rs
+index ba4544a..1e10639 100644
+--- a/crates/codegen/xai-grok-hooks/src/dispatcher.rs
++++ b/crates/codegen/xai-grok-hooks/src/dispatcher.rs
+@@ -166,12 +166,12 @@ async fn dispatch_sequential_gate(
+                 if let Some(text) = hook_additional_context {
+                     record_additional_context(&mut additional_context, &spec.name, text);
+                 }
+-                run_results.push(HookRunResult::Success {
+-                    hook_name: spec.name.clone(),
++                run_results.push(HookRunResult::with_message(
++                    spec.name.clone(),
+                     elapsed,
+                     http_info,
+                     system_message,
+-                });
++                ));
+             }
+             HookRunnerResult::Ask {
+                 reason,
+@@ -192,12 +192,12 @@ async fn dispatch_sequential_gate(
+                     record_additional_context(&mut additional_context, &spec.name, text);
+                 }
+                 record_ask(&mut pending_ask, &spec.name, reason);
+-                run_results.push(HookRunResult::Success {
+-                    hook_name: spec.name.clone(),
++                run_results.push(HookRunResult::with_message(
++                    spec.name.clone(),
+                     elapsed,
+                     http_info,
+                     system_message,
+-                });
++                ));
+             }
+             HookRunnerResult::Defer => {
+                 tracing::info!(
+@@ -206,12 +206,12 @@ async fn dispatch_sequential_gate(
+                     "hook deferred"
+                 );
+                 deferring_hook = Some(spec.name.clone());
+-                run_results.push(HookRunResult::Success {
+-                    hook_name: spec.name.clone(),
++                run_results.push(HookRunResult::with_message(
++                    spec.name.clone(),
+                     elapsed,
+                     http_info,
+                     system_message,
+-                });
++                ));
+             }
+             HookRunnerResult::Failed(err) => {
+                 tracing::warn!(
+@@ -230,18 +230,19 @@ async fn dispatch_sequential_gate(
+             }
+             HookRunnerResult::Success
+             | HookRunnerResult::Stop(_)
+-            | HookRunnerResult::PostToolUse { .. } => {
++            | HookRunnerResult::PostToolUse { .. }
++            | HookRunnerResult::Observe { .. } => {
+                 tracing::info!(
+                     hook_name = %spec.name,
+                     elapsed_ms = elapsed.as_millis() as u64,
+                     "hook completed"
+                 );
+-                run_results.push(HookRunResult::Success {
+-                    hook_name: spec.name.clone(),
++                run_results.push(HookRunResult::with_message(
++                    spec.name.clone(),
+                     elapsed,
+                     http_info,
+                     system_message,
+-                });
++                ));
+             }
+         }
+     }
+@@ -371,6 +372,10 @@ pub struct StopDispatchResult {
+     pub additional_context: Vec<String>,
+     pub prevent_continuation: Option<StopBlock>,
+     pub results: Vec<HookRunResult>,
++    /// Last non-empty `sessionTitle` from a stop hook.
++    pub session_title: Option<String>,
++    /// Last allowlisted `terminalSequence` from a stop hook.
++    pub terminal_sequence: Option<String>,
+ }
+ 
+ impl StopDispatchResult {
+@@ -397,6 +402,12 @@ impl StopDispatchResult {
+         if let Some(context) = signals.additional_context {
+             self.additional_context.push(context);
+         }
++        if let Some(title) = signals.session_title {
++            self.session_title = Some(title);
++        }
++        if let Some(seq) = signals.terminal_sequence {
++            self.terminal_sequence = Some(seq);
++        }
+     }
+ }
+ 
+@@ -405,6 +416,8 @@ pub struct StopSignals {
+     pub block_reason: Option<String>,
+     pub stop_reason: Option<String>,
+     pub additional_context: Option<String>,
++    pub session_title: Option<String>,
++    pub terminal_sequence: Option<String>,
+ }
+ 
+ pub fn stop_detail(
+@@ -496,6 +509,8 @@ pub async fn dispatch_stop(
+                         elapsed,
+                         http_info,
+                         system_message,
++                        session_title: outcome.session_title.clone(),
++                        terminal_sequence: outcome.terminal_sequence.clone(),
+                     }),
+                 }
+                 out.absorb(
+@@ -508,6 +523,8 @@ pub async fn dispatch_stop(
+                                 .unwrap_or_else(|| "stopped by hook".to_string())
+                         }),
+                         additional_context: outcome.additional_context,
++                        session_title: outcome.session_title,
++                        terminal_sequence: outcome.terminal_sequence,
+                     },
+                 );
+             }
+@@ -532,13 +549,14 @@ pub async fn dispatch_stop(
+             | HookRunnerResult::Defer
+             | HookRunnerResult::Deny { .. }
+             | HookRunnerResult::Block { .. }
+-            | HookRunnerResult::PostToolUse { .. } => {
+-                out.results.push(HookRunResult::Success {
+-                    hook_name: spec.name.clone(),
++            | HookRunnerResult::PostToolUse { .. }
++            | HookRunnerResult::Observe { .. } => {
++                out.results.push(HookRunResult::with_message(
++                    spec.name.clone(),
+                     elapsed,
+                     http_info,
+                     system_message,
+-                });
++                ));
+             }
+         }
+     }
+@@ -692,12 +710,12 @@ pub async fn dispatch_post_tool_use(
+                         http_info,
+                         system_message,
+                     },
+-                    None => HookRunResult::Success {
+-                        hook_name: spec.name.clone(),
++                    None => HookRunResult::with_message(
++                        spec.name.clone(),
+                         elapsed,
+                         http_info,
+                         system_message,
+-                    },
++                    ),
+                 });
+                 let run_index = out.results.len() - 1;
+                 out.absorb(&spec.name, run_index, outcome);
+@@ -723,13 +741,14 @@ pub async fn dispatch_post_tool_use(
+             | HookRunnerResult::Defer
+             | HookRunnerResult::Deny { .. }
+             | HookRunnerResult::Block { .. }
+-            | HookRunnerResult::Stop(_) => {
+-                out.results.push(HookRunResult::Success {
+-                    hook_name: spec.name.clone(),
++            | HookRunnerResult::Stop(_)
++            | HookRunnerResult::Observe { .. } => {
++                out.results.push(HookRunResult::with_message(
++                    spec.name.clone(),
+                     elapsed,
+                     http_info,
+                     system_message,
+-                });
++                ));
+             }
+         }
+     }
+@@ -796,12 +815,12 @@ pub async fn dispatch_post_tool_use_failure(
+                         http_info,
+                         system_message,
+                     },
+-                    None => HookRunResult::Success {
+-                        hook_name: spec.name.clone(),
++                    None => HookRunResult::with_message(
++                        spec.name.clone(),
+                         elapsed,
+                         http_info,
+                         system_message,
+-                    },
++                    ),
+                 });
+             }
+             HookRunnerResult::Failed(err) => {
+@@ -825,13 +844,14 @@ pub async fn dispatch_post_tool_use_failure(
+             | HookRunnerResult::Defer
+             | HookRunnerResult::Deny { .. }
+             | HookRunnerResult::Block { .. }
+-            | HookRunnerResult::Stop(_) => {
+-                out.results.push(HookRunResult::Success {
+-                    hook_name: spec.name.clone(),
++            | HookRunnerResult::Stop(_)
++            | HookRunnerResult::Observe { .. } => {
++                out.results.push(HookRunResult::with_message(
++                    spec.name.clone(),
+                     elapsed,
+                     http_info,
+                     system_message,
+-                });
++                ));
+             }
+         }
+     }
+@@ -884,11 +904,26 @@ pub async fn dispatch_non_blocking(
+                     elapsed_ms = elapsed.as_millis() as u64,
+                     "hook completed"
+                 );
++                results.push(HookRunResult::with_message(
++                    spec.name.clone(),
++                    elapsed,
++                    http_info,
++                    system_message,
++                ));
++            }
++            HookRunnerResult::Observe { effects } => {
++                tracing::info!(
++                    hook_name = %spec.name,
++                    elapsed_ms = elapsed.as_millis() as u64,
++                    "hook completed with observe effects"
++                );
+                 results.push(HookRunResult::Success {
+                     hook_name: spec.name.clone(),
+                     elapsed,
+                     http_info,
+                     system_message,
++                    session_title: effects.session_title,
++                    terminal_sequence: effects.terminal_sequence,
+                 });
+             }
+             HookRunnerResult::Failed(err) => {
+@@ -916,12 +951,12 @@ pub async fn dispatch_non_blocking(
+                     elapsed_ms = elapsed.as_millis() as u64,
+                     "hook completed"
+                 );
+-                results.push(HookRunResult::Success {
+-                    hook_name: spec.name.clone(),
++                results.push(HookRunResult::with_message(
++                    spec.name.clone(),
+                     elapsed,
+                     http_info,
+                     system_message,
+-                });
++                ));
+             }
+             HookRunnerResult::Stop(_) | HookRunnerResult::PostToolUse { .. } => {
+                 results.push(HookRunResult::Failed {
+@@ -2101,11 +2136,8 @@ mod tests {
+ 
+     #[test]
+     fn merge_appends_results_blocks_and_context() {
+-        let success = |name: &str| HookRunResult::Success {
+-            hook_name: name.to_string(),
+-            elapsed: std::time::Duration::ZERO,
+-            http_info: None,
+-            system_message: None,
++        let success = |name: &str| {
++            HookRunResult::with_message(name.to_string(), std::time::Duration::ZERO, None, None)
+         };
+         let block = |name: &str| PostToolUseBlock {
+             hook_name: name.to_string(),
+diff --git a/crates/codegen/xai-grok-hooks/src/lib.rs b/crates/codegen/xai-grok-hooks/src/lib.rs
+index 7538018..da6d11b 100644
+--- a/crates/codegen/xai-grok-hooks/src/lib.rs
++++ b/crates/codegen/xai-grok-hooks/src/lib.rs
+@@ -45,6 +45,7 @@ pub mod event;
+ pub mod matcher;
+ pub mod result;
+ pub mod runner;
++pub mod terminal_sequence;
+ #[cfg(test)]
+ mod test_support;
+ pub mod trust;
+diff --git a/crates/codegen/xai-grok-hooks/src/result.rs b/crates/codegen/xai-grok-hooks/src/result.rs
+index 09acfa1..6c33fdc 100644
+--- a/crates/codegen/xai-grok-hooks/src/result.rs
++++ b/crates/codegen/xai-grok-hooks/src/result.rs
+@@ -22,11 +22,26 @@ pub enum PromptDecision {
+     Block { reason: String, hook_name: String },
+ }
+ 
++/// Side effects a hook may request without gating the event.
++#[derive(Debug, Clone, Default, PartialEq, Eq)]
++pub struct HookEffects {
++    pub session_title: Option<String>,
++    pub terminal_sequence: Option<String>,
++}
++
++impl HookEffects {
++    pub fn is_empty(&self) -> bool {
++        self.session_title.is_none() && self.terminal_sequence.is_none()
++    }
++}
++
+ #[derive(Debug, Clone, Default, PartialEq, Eq)]
+ pub struct StopHookOutcome {
+     pub block_reason: Option<String>,
+     pub additional_context: Option<String>,
+     pub force_stop: Option<StopOverride>,
++    pub session_title: Option<String>,
++    pub terminal_sequence: Option<String>,
+ }
+ 
+ #[derive(Debug, Clone, Default, PartialEq, Eq)]
+@@ -82,6 +97,8 @@ impl StopHookOutcome {
+         self.block_reason.is_none()
+             && self.additional_context.is_none()
+             && self.force_stop.is_none()
++            && self.session_title.is_none()
++            && self.terminal_sequence.is_none()
+     }
+ }
+ 
+@@ -100,6 +117,8 @@ pub enum HookRunResult {
+         elapsed: Duration,
+         http_info: Option<HttpInfo>,
+         system_message: Option<String>,
++        session_title: Option<String>,
++        terminal_sequence: Option<String>,
+     },
+     Skipped {
+         hook_name: String,
+@@ -119,3 +138,40 @@ pub enum HookRunResult {
+         system_message: Option<String>,
+     },
+ }
++
++impl HookRunResult {
++    pub fn success(hook_name: String, elapsed: Duration, http_info: Option<HttpInfo>) -> Self {
++        Self::with_message(hook_name, elapsed, http_info, None)
++    }
++
++    pub fn with_message(
++        hook_name: String,
++        elapsed: Duration,
++        http_info: Option<HttpInfo>,
++        system_message: Option<String>,
++    ) -> Self {
++        Self::Success {
++            hook_name,
++            elapsed,
++            http_info,
++            system_message,
++            session_title: None,
++            terminal_sequence: None,
++        }
++    }
++
++    pub fn observe_effects(&self) -> HookEffects {
++        match self {
++            Self::Success {
++                session_title,
++                terminal_sequence,
++                ..
++            } => HookEffects {
++                session_title: session_title.clone(),
++                terminal_sequence: terminal_sequence.clone(),
++            },
++            _ => HookEffects::default(),
++        }
++    }
++}
++
+diff --git a/crates/codegen/xai-grok-hooks/src/runner/command.rs b/crates/codegen/xai-grok-hooks/src/runner/command.rs
+index b550257..0eea052 100644
+--- a/crates/codegen/xai-grok-hooks/src/runner/command.rs
++++ b/crates/codegen/xai-grok-hooks/src/runner/command.rs
+@@ -27,7 +27,8 @@ use crate::result::StopHookOutcome;
+ use super::{
+     GateHookJson, GateKind, GateOutcome, HookHealth, HookRunnerResult, PostToolUseHookJson,
+     PostToolUseParse, PromptHookJson, RunContext, StopHookJson, extract_system_message,
+-    gate_outcome, post_tool_use_json_to_outcome, prompt_json_to_block, stop_json_to_outcome,
++    gate_outcome, parse_observe_effects, post_tool_use_json_to_outcome, prompt_json_to_block,
++    stop_json_to_outcome,
+ };
+ 
+ const CAPTURE_HEADROOM_OVER_REPLACEMENT: usize = 16;
+@@ -330,7 +331,12 @@ pub async fn run_command_hook(
+             let (result, elapsed) = match mode {
+                 GateKind::Observe => {
+                     if exit_code == 0 {
+-                        (HookRunnerResult::Success, elapsed)
++                        let effects = parse_observe_effects(stdout.as_bytes());
++                        if effects.is_empty() {
++                            (HookRunnerResult::Success, elapsed)
++                        } else {
++                            (HookRunnerResult::Observe { effects }, elapsed)
++                        }
+                     } else {
+                         (
+                             HookRunnerResult::Failed(append_stderr_line(
+@@ -1672,6 +1678,28 @@ mod tests {
+         assert!(stop_outcome(result).is_empty());
+     }
+ 
++    #[test]
++    fn observe_json_harvests_session_title_and_allowlisted_osc() {
++        let effects = super::parse_observe_effects(
++            br#"{"hookSpecificOutput":{"sessionTitle":"parked-arx-console","terminalSequence":"\u001b]0;parked-arx-console\u0007"}}"#,
++        );
++        assert_eq!(effects.session_title.as_deref(), Some("parked-arx-console"));
++        assert!(
++            effects
++                .terminal_sequence
++                .as_deref()
++                .unwrap()
++                .starts_with("\u{1b}]0;")
++        );
++
++        let rejected = super::parse_observe_effects(
++            br#"{"hookSpecificOutput":{"terminalSequence":"\u001b]52;c;QUFB\u0007"}}"#,
++        );
++        assert!(rejected.terminal_sequence.is_none());
++        let empty = super::parse_observe_effects(b"not json");
++        assert!(empty.is_empty());
++    }
++
+     #[test]
+     fn stop_allow_failure_and_unknown_decision() {
+         let (result, _) = parse_stop_result("", "", 0, "s", Duration::ZERO);
+diff --git a/crates/codegen/xai-grok-hooks/src/runner/http.rs b/crates/codegen/xai-grok-hooks/src/runner/http.rs
+index 6971ea1..6a0b172 100644
+--- a/crates/codegen/xai-grok-hooks/src/runner/http.rs
++++ b/crates/codegen/xai-grok-hooks/src/runner/http.rs
+@@ -10,7 +10,7 @@ use crate::result::{HttpInfo, StopHookOutcome};
+ use super::command::MAX_OUTPUT_BYTES;
+ use super::{
+     GateKind, GateOutcome, HookHealth, HookRunOutput, HookRunnerResult, PostToolUseHookJson,
+-    PromptHookJson, RunContext, StopHookJson, extract_system_message,
++    PromptHookJson, RunContext, StopHookJson, extract_system_message, parse_observe_effects,
+     post_tool_use_json_to_outcome, prompt_json_to_block, stop_json_to_outcome,
+ };
+ 
+@@ -282,7 +282,14 @@ pub async fn run_http_hook(
+         GateKind::Stop => parse_http_stop_result(&response_text, status, &spec.name),
+         GateKind::PostTool => parse_http_post_tool_use_result(&response_text, status, &spec.name),
+         GateKind::Prompt => parse_http_prompt_result(&response_text, status, &spec.name),
+-        GateKind::Observe if status.is_success() => HookRunnerResult::Success,
++        GateKind::Observe if status.is_success() => {
++            let effects = parse_observe_effects(response_text.as_bytes());
++            if effects.is_empty() {
++                HookRunnerResult::Success
++            } else {
++                HookRunnerResult::Observe { effects }
++            }
++        }
+         GateKind::Observe => HookRunnerResult::Failed(format!("HTTP status {status}")),
+     };
+     (result, elapsed, http_info, system_message)
+diff --git a/crates/codegen/xai-grok-hooks/src/runner/mod.rs b/crates/codegen/xai-grok-hooks/src/runner/mod.rs
+index 4db6f2a..34c32f4 100644
+--- a/crates/codegen/xai-grok-hooks/src/runner/mod.rs
++++ b/crates/codegen/xai-grok-hooks/src/runner/mod.rs
+@@ -45,6 +45,10 @@ pub enum HookRunnerResult {
+         failure: Option<String>,
+     },
+     Success,
++    /// Observe-mode JSON asked the host to rename and/or emit OSC.
++    Observe {
++        effects: crate::result::HookEffects,
++    },
+     Failed(String),
+ }
+ 
+@@ -72,6 +76,13 @@ pub(crate) struct GateHookSpecificOutputJson {
+     updated_input: Option<serde_json::Value>,
+     #[serde(default)]
+     additional_context: Option<serde_json::Value>,
++    /// Harvested on observe/Stop, not PreToolUse.
++    #[serde(default)]
++    #[allow(dead_code)]
++    session_title: Option<String>,
++    #[serde(default)]
++    #[allow(dead_code)]
++    terminal_sequence: Option<String>,
+     #[serde(flatten)]
+     rest: serde_json::Map<String, serde_json::Value>,
+ }
+@@ -188,7 +199,7 @@ impl GateHookJson {
+ }
+ 
+ const SILENTLY_IGNORED_TOP_LEVEL_KEYS: &[&str] = &["hookEventName", "continue", "systemMessage"];
+-const SILENTLY_IGNORED_NESTED_KEYS: &[&str] = &["hookEventName"];
++const SILENTLY_IGNORED_NESTED_KEYS: &[&str] = &["hookEventName", "sessionTitle", "terminalSequence"];
+ 
+ fn non_empty(text: Option<&str>) -> Option<&str> {
+     let trimmed = text?.trim();
+@@ -405,6 +416,10 @@ pub(crate) struct StopHookJson {
+ pub(crate) struct StopHookSpecificOutputJson {
+     #[serde(default, rename = "additionalContext")]
+     pub additional_context: Option<String>,
++    #[serde(default, rename = "sessionTitle")]
++    pub session_title: Option<String>,
++    #[serde(default, rename = "terminalSequence")]
++    pub terminal_sequence: Option<String>,
+ }
+ 
+ pub(crate) fn stop_json_to_outcome(
+@@ -424,16 +439,23 @@ pub(crate) fn stop_json_to_outcome(
+             ));
+         }
+     };
++    let output = json.hook_specific_output.unwrap_or_default();
+     Ok(StopHookOutcome {
+         block_reason,
+-        additional_context: json
+-            .hook_specific_output
+-            .and_then(|output| output.additional_context)
++        additional_context: output
++            .additional_context
+             .filter(|context| !context.trim().is_empty())
+             .map(|context| clip_text(&context, MAX_HOOK_FEEDBACK_CHARS)),
+         force_stop: (json.continue_ == Some(false)).then_some(crate::result::StopOverride {
+             reason: json.stop_reason,
+         }),
++        session_title: output
++            .session_title
++            .filter(|title| !title.trim().is_empty()),
++        terminal_sequence: output
++            .terminal_sequence
++            .as_deref()
++            .and_then(crate::terminal_sequence::sanitize_terminal_sequence),
+     })
+ }
+ 
+@@ -538,6 +560,37 @@ pub(crate) fn post_tool_use_json_to_outcome(
+     }
+ }
+ 
++/// Harvest Claude-shaped observe JSON: `hookSpecificOutput.sessionTitle`
++/// and `hookSpecificOutput.terminalSequence`. Malformed stdout is empty
++/// effects (observe never fails closed on JSON).
++pub(crate) fn parse_observe_effects(stdout: &[u8]) -> crate::result::HookEffects {
++    #[derive(serde::Deserialize)]
++    struct ObserveJson {
++        #[serde(default, rename = "hookSpecificOutput")]
++        hook_specific_output: Option<ObserveSpecific>,
++    }
++    #[derive(serde::Deserialize, Default)]
++    struct ObserveSpecific {
++        #[serde(default, rename = "sessionTitle")]
++        session_title: Option<String>,
++        #[serde(default, rename = "terminalSequence")]
++        terminal_sequence: Option<String>,
++    }
++    let Ok(json) = serde_json::from_slice::<ObserveJson>(stdout) else {
++        return crate::result::HookEffects::default();
++    };
++    let output = json.hook_specific_output.unwrap_or_default();
++    crate::result::HookEffects {
++        session_title: output
++            .session_title
++            .filter(|title| !title.trim().is_empty()),
++        terminal_sequence: output
++            .terminal_sequence
++            .as_deref()
++            .and_then(crate::terminal_sequence::sanitize_terminal_sequence),
++    }
++}
++
+ pub type HookRunOutput = (HookRunnerResult, Duration, Option<HttpInfo>, Option<String>);
+ 
+ pub async fn run_hook(
+diff --git a/crates/codegen/xai-grok-hooks/src/terminal_sequence.rs b/crates/codegen/xai-grok-hooks/src/terminal_sequence.rs
+new file mode 100644
+index 0000000..4358f29
+--- /dev/null
++++ b/crates/codegen/xai-grok-hooks/src/terminal_sequence.rs
+@@ -0,0 +1,72 @@
++//! Allowlist for hook-emitted terminal escape sequences.
++//!
++//! Claude Code writes `hookSpecificOutput.terminalSequence` itself (never
++//! `/dev/tty` from the hook). Grok does the same: the hook returns a string,
++//! this module admits only OSC 0/1/2 (title), OSC 9/99/777 (notify), and BEL.
++//! OSC 52 (clipboard), CSI, DCS, and nested ESC are rejected.
++
++/// Max bytes of a hook-emitted sequence. Titles and notify bodies are short;
++/// a 512-byte cap stops a hook flooding the TTY.
++pub const MAX_TERMINAL_SEQUENCE_BYTES: usize = 512;
++
++/// Admit a hook `terminalSequence` or return `None`.
++///
++/// Accepted forms (one sequence, one terminator):
++/// - BEL (`\x07`)
++/// - `ESC ] 0|1|2 ; <title> BEL` or ST (`ESC \`)
++/// - `ESC ] 9 ; <msg> BEL` (iTerm2/WezTerm notify)
++/// - `ESC ] 99 ; ... ST` (Kitty notify)
++/// - `ESC ] 777 ; notify ; ... ST|BEL` (Ghostty/VTE notify)
++pub fn sanitize_terminal_sequence(raw: &str) -> Option<String> {
++    if raw.is_empty() || raw.len() > MAX_TERMINAL_SEQUENCE_BYTES {
++        return None;
++    }
++    if raw == "\u{07}" {
++        return Some(raw.to_string());
++    }
++    let rest = raw.strip_prefix("\u{1b}]")?;
++    let payload = if let Some(p) = rest.strip_suffix('\u{07}') {
++        p
++    } else if let Some(p) = rest.strip_suffix("\u{1b}\\") {
++        p
++    } else {
++        return None;
++    };
++    if payload.contains('\u{1b}') || payload.contains('\u{07}') {
++        return None;
++    }
++    let ps = payload.split(';').next().unwrap_or("");
++    match ps {
++        "0" | "1" | "2" | "9" | "99" | "777" => Some(raw.to_string()),
++        _ => None,
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn admits_bel_and_title_osc() {
++        assert_eq!(sanitize_terminal_sequence("\u{07}").as_deref(), Some("\u{07}"));
++        assert_eq!(
++            sanitize_terminal_sequence("\u{1b}]0;parked-arx-console\u{07}").as_deref(),
++            Some("\u{1b}]0;parked-arx-console\u{07}")
++        );
++        assert!(sanitize_terminal_sequence("\u{1b}]2;hi\u{1b}\\").is_some());
++        assert!(sanitize_terminal_sequence("\u{1b}]9;done\u{07}").is_some());
++        assert!(sanitize_terminal_sequence("\u{1b}]99;i=grok;done\u{1b}\\").is_some());
++        assert!(sanitize_terminal_sequence("\u{1b}]777;notify;Grok;done\u{07}").is_some());
++    }
++
++    #[test]
++    fn rejects_clipboard_csi_nested_esc_and_overlong() {
++        assert!(sanitize_terminal_sequence("\u{1b}]52;c;QUFB\u{07}").is_none());
++        assert!(sanitize_terminal_sequence("\u{1b}[31mred").is_none());
++        assert!(sanitize_terminal_sequence("\u{1b}]0;evil\u{1b}]52;c;x\u{07}\u{07}").is_none());
++        assert!(sanitize_terminal_sequence("not-an-osc").is_none());
++        assert!(sanitize_terminal_sequence("").is_none());
++        let huge = format!("\u{1b}]0;{}\u{07}", "x".repeat(MAX_TERMINAL_SEQUENCE_BYTES));
++        assert!(sanitize_terminal_sequence(&huge).is_none());
++    }
++}
+diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/04-slash-commands.md b/crates/codegen/xai-grok-pager/docs/user-guide/04-slash-commands.md
+index 6c928d7..59d16d7 100644
+--- a/crates/codegen/xai-grok-pager/docs/user-guide/04-slash-commands.md
++++ b/crates/codegen/xai-grok-pager/docs/user-guide/04-slash-commands.md
+@@ -93,6 +93,8 @@ Rename the current session. Alias: `/title`.
+ 
+ `--auto` unpins a manual title and lets auto-titling resume. It applies to Build sessions only — chat conversations have no local auto-titler. It must be the only argument (`/rename --auto Something` is an error). A session cannot be named `--auto` via this command; use the dashboard rename editor (`Ctrl+R`) for that pathological case.
+ 
++CLI equivalent (no TUI): `grok sessions rename <id> <title>` or `grok sessions rename <id> --reset-to-auto`. That command is **not** `/rename --auto` invent — `--auto` remains unpin.
++
+ ---
+ 
+ ## Model and Mode
+diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/10-hooks.md b/crates/codegen/xai-grok-pager/docs/user-guide/10-hooks.md
+index 6ee2802..6babee0 100644
+--- a/crates/codegen/xai-grok-pager/docs/user-guide/10-hooks.md
++++ b/crates/codegen/xai-grok-pager/docs/user-guide/10-hooks.md
+@@ -334,6 +334,8 @@ Write human-readable diagnostics to **stderr**: it is the hook's feedback channe
+ 
+ - **Block the stop**: `{"decision": "block", "reason": "The test suite hasn't been run yet"}`. The reason is fed back to the model as a user message and the agent runs another round in the same turn.
+ - **Non-error feedback**: `{"hookSpecificOutput": {"hookEventName": "Stop", "additionalContext": "Run the linter before finishing"}}`. Also keeps the agent working, but is surfaced as hook feedback rather than a hook error.
++- **Session title (observe + Stop)**: `{"hookSpecificOutput": {"sessionTitle": "parked-arx-console"}}`. Pins `title_is_manual` and live-updates the TUI the same way `/rename` does. Do **not** send `additionalContext` on Stop just to rename — that keeps the agent working.
++- **Terminal sequence**: `{"hookSpecificOutput": {"terminalSequence": "\u001b]0;parked-arx-console\u0007"}}`. The TUI writes the sequence (never the hook's `/dev/tty`). Allowlist: OSC 0/1/2 (title), OSC 9/99/777 (notify), BEL. OSC 52 (clipboard) is rejected.
+ - **Force stop**: `{"continue": false, "stopReason": "Budget exhausted"}`. Ends the turn, overriding any blocks.
+ - **Allow the stop**: exit 0 with no output (or any non-JSON output).
+ 
+diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/17-sessions.md b/crates/codegen/xai-grok-pager/docs/user-guide/17-sessions.md
+index 9488431..c30d251 100644
+--- a/crates/codegen/xai-grok-pager/docs/user-guide/17-sessions.md
++++ b/crates/codegen/xai-grok-pager/docs/user-guide/17-sessions.md
+@@ -133,6 +133,14 @@ Rename the current session's title:
+ 
+ Alias: `/title`. `/rename --auto` clears a manual title and re-enables auto-titling.
+ 
++From a script or another process (disk + `/resume`; a live pager also needs the
++hook `sessionTitle` path or a TUI `/rename`):
++
++```
++grok sessions rename <session-id> parked-arx-console
++grok sessions rename <session-id> --reset-to-auto
++```
++
+ ---
+ 
+ ## The /rewind Command
+diff --git a/crates/codegen/xai-grok-pager/src/app/acp_handler/session_notification.rs b/crates/codegen/xai-grok-pager/src/app/acp_handler/session_notification.rs
+index 65b39d3..d8e830e 100644
+--- a/crates/codegen/xai-grok-pager/src/app/acp_handler/session_notification.rs
++++ b/crates/codegen/xai-grok-pager/src/app/acp_handler/session_notification.rs
+@@ -291,6 +291,7 @@ pub(super) fn handle_session_notification_with_origin(
+     let mut terminal_outcome: Option<super::super::turn_completion::TerminalApply> = None;
+     let mut pending_finish_for_spawn = None;
+     let root_session_id: &str = session_notif.session_id.0.as_ref();
++    let mut hook_terminal_sequence = None;
+     let changed = match session_notif.update {
+         ref update @ (XaiSessionUpdate::AutoCompactStarted { .. }
+         | XaiSessionUpdate::AutoCompactCompleted { .. }
+@@ -1081,6 +1082,10 @@ pub(super) fn handle_session_notification_with_origin(
+             }
+             true
+         }
++        XaiSessionUpdate::TerminalSequence { sequence } => {
++            hook_terminal_sequence = Some(sequence);
++            true
++        }
+         XaiSessionUpdate::LastTurnSummary {
+             summary,
+             prompt_id: _,
+@@ -1348,6 +1353,9 @@ pub(super) fn handle_session_notification_with_origin(
+         }
+     };
+     let mut changed = changed;
++    if let Some(sequence) = hook_terminal_sequence {
++        app.notification_service.emit_hook_sequence(&sequence);
++    }
+     if status_snapshot_applied && is_active {
+         app.refresh_status_line_now();
+         changed |= app.status_line.take_changed();
+diff --git a/crates/codegen/xai-grok-pager/src/notifications/mod.rs b/crates/codegen/xai-grok-pager/src/notifications/mod.rs
+index a429342..657a15b 100644
+--- a/crates/codegen/xai-grok-pager/src/notifications/mod.rs
++++ b/crates/codegen/xai-grok-pager/src/notifications/mod.rs
+@@ -90,6 +90,12 @@ impl NotificationService {
+         }
+     }
+ 
++    /// Write a hook `terminalSequence` (already allowlisted in the shell).
++    /// Bypasses the focus gate: the hook asked for this exact OSC.
++    pub fn emit_hook_sequence(&self, sequence: &str) {
++        protocol::emit_raw_sequence(sequence, self.terminal_ctx);
++    }
++
+     /// Notifications bypass the frame pipeline: rare one-shot events that must not wait for the next draw (16ms away,
+     /// or indefinitely while a frame ack is outstanding). For `ApprovalRequired` events, the caller must check
+     /// [`should_suppress_permission_notification`] first.
+diff --git a/crates/codegen/xai-grok-pager/src/notifications/protocol.rs b/crates/codegen/xai-grok-pager/src/notifications/protocol.rs
+index cda257f..36d8d36 100644
+--- a/crates/codegen/xai-grok-pager/src/notifications/protocol.rs
++++ b/crates/codegen/xai-grok-pager/src/notifications/protocol.rs
+@@ -1,4 +1,5 @@
+ use std::borrow::Cow;
++use std::io::Write;
+ 
+ use crate::notifications::tmux;
+ use crate::terminal::{MultiplexerKind, TerminalContext, TerminalName};
+@@ -106,6 +107,27 @@ pub fn emit_notification(
+     }
+ }
+ 
++/// Write an already-allowlisted hook `terminalSequence` to stderr.
++/// Tmux gets DCS passthrough so the outer emulator sees OSC 0/9/99/777.
++pub fn emit_raw_sequence(sequence: &str, ctx: &TerminalContext) {
++    let Some(sequence) = xai_grok_shell::terminal_sequence::sanitize_terminal_sequence(sequence)
++    else {
++        return;
++    };
++    if ctx.is_tmux_backed() {
++        let wrapped = tmux::tmux_passthrough(&sequence);
++        xai_grok_shell::util::with_locked_stderr(|stderr| {
++            let _ = stderr.write_all(wrapped.as_bytes());
++            let _ = stderr.flush();
++        });
++    } else {
++        xai_grok_shell::util::with_locked_stderr(|stderr| {
++            let _ = stderr.write_all(sequence.as_bytes());
++            let _ = stderr.flush();
++        });
++    }
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+diff --git a/crates/codegen/xai-grok-pager/src/sessions_cmd.rs b/crates/codegen/xai-grok-pager/src/sessions_cmd.rs
+index 6e4a033..5ad17d1 100644
+--- a/crates/codegen/xai-grok-pager/src/sessions_cmd.rs
++++ b/crates/codegen/xai-grok-pager/src/sessions_cmd.rs
+@@ -31,6 +31,17 @@ enum SessionsCommand {
+         /// Session id to delete.
+         id: String,
+     },
++    /// Rename a session title (pins `title_is_manual`, same as `/rename`)
++    Rename {
++        /// Session id to rename.
++        id: String,
++        /// New title. Join remaining words. Required unless `--reset-to-auto`.
++        #[arg(trailing_var_arg = true)]
++        title: Vec<String>,
++        /// Unpin a manual title so automatic titling resumes (`/rename --auto`).
++        #[arg(long, conflicts_with = "title")]
++        reset_to_auto: bool,
++    },
+ }
+ 
+ pub async fn run(args: SessionsArgs, agent_config: &AgentConfig) -> Result<()> {
+@@ -205,6 +216,37 @@ pub async fn run(args: SessionsArgs, agent_config: &AgentConfig) -> Result<()> {
+                 println!("No session found with id {id}.");
+             }
+         }
++        SessionsCommand::Rename {
++            id,
++            title,
++            reset_to_auto,
++        } => {
++            let title_arg = if reset_to_auto {
++                None
++            } else {
++                let joined = title.join(" ");
++                if joined.trim().is_empty() {
++                    anyhow::bail!("Usage: grok sessions rename <id> <title> | --reset-to-auto");
++                }
++                Some(joined)
++            };
++            let root = grok_home();
++            let outcome = xai_grok_shell::session::cli_rename::rename_session_in(
++                root,
++                &id,
++                title_arg.as_deref(),
++            )
++            .await?;
++            if outcome.reset {
++                println!("Reset session {} title to auto", outcome.session_id);
++            } else {
++                println!(
++                    "Renamed session {} to \"{}\"",
++                    outcome.session_id,
++                    outcome.title.as_deref().unwrap_or("")
++                );
++            }
++        }
+     }
+ 
+     Ok(())
+diff --git a/crates/codegen/xai-grok-shell/src/extensions/notification.rs b/crates/codegen/xai-grok-shell/src/extensions/notification.rs
+index 4f049d1..18f2db3 100644
+--- a/crates/codegen/xai-grok-shell/src/extensions/notification.rs
++++ b/crates/codegen/xai-grok-shell/src/extensions/notification.rs
+@@ -586,6 +586,12 @@ pub enum SessionUpdate {
+         /// The generated session summary/title
+         session_summary: String,
+     },
++    /// Hook-requested terminal escape (OSC 0/9/99/777 or BEL). Transient:
++    /// the pager writes it; it is not persisted. Must already be allowlisted
++    /// (`xai_grok_hooks::terminal_sequence::sanitize_terminal_sequence`).
++    TerminalSequence {
++        sequence: String,
++    },
+     /// A short "where was I" recap of the session so far.
+     /// The `x.ai/recap` ext method emits it: `/recap` sets `auto = false`, and returning to the terminal after being away sets `auto = true`.
+     /// The pager renders it as an informational scrollback line; it is never added to the model conversation.
+diff --git a/crates/codegen/xai-grok-shell/src/lib.rs b/crates/codegen/xai-grok-shell/src/lib.rs
+index f397ede..d6f27b6 100644
+--- a/crates/codegen/xai-grok-shell/src/lib.rs
++++ b/crates/codegen/xai-grok-shell/src/lib.rs
+@@ -46,6 +46,7 @@ pub mod remote;
+ pub mod sampling;
+ pub mod session;
+ pub use xai_grok_shell_terminal as terminal;
++pub use xai_grok_hooks::terminal_sequence;
+ #[cfg(test)]
+ pub(crate) mod test_support;
+ pub mod tier;
+diff --git a/crates/codegen/xai-grok-shell/src/session/acp_session/hooks.rs b/crates/codegen/xai-grok-shell/src/session/acp_session/hooks.rs
+index 247736d..6a1765d 100644
+--- a/crates/codegen/xai-grok-shell/src/session/acp_session/hooks.rs
++++ b/crates/codegen/xai-grok-shell/src/session/acp_session/hooks.rs
+@@ -430,12 +430,12 @@ impl SessionActor {
+                     http_info: None,
+                     system_message: None,
+                 },
+-                (None, None) => HookRunResult::Success {
+-                    hook_name: hook_name.clone(),
++                (None, None) => HookRunResult::with_message(
++                    hook_name.clone(),
+                     elapsed,
+-                    http_info: None,
+-                    system_message: None,
+-                },
++                    None,
++                    None,
++                ),
+             });
+ 
+             out.absorb(
+@@ -447,6 +447,8 @@ impl SessionActor {
+                         .additional_context
+                         .filter(|c| !c.trim().is_empty())
+                         .map(|c| clip_text(&c, MAX_HOOK_FEEDBACK_CHARS)),
++                    session_title: None,
++                    terminal_sequence: None,
+                 },
+             );
+         }
+@@ -488,12 +490,12 @@ impl SessionActor {
+                 });
+                 continue;
+             }
+-            out.results.push(HookRunResult::Success {
+-                hook_name: hook_name.clone(),
++            out.results.push(HookRunResult::with_message(
++                hook_name.clone(),
+                 elapsed,
+-                http_info: None,
+-                system_message: None,
+-            });
++                None,
++                None,
++            ));
+             if response.decision == ClientHookDecision::Deny {
+                 let reason = response
+                     .system_message
+diff --git a/crates/codegen/xai-grok-shell/src/session/acp_session_impl/hook_dispatch.rs b/crates/codegen/xai-grok-shell/src/session/acp_session_impl/hook_dispatch.rs
+index 90e1a45..91f485e 100644
+--- a/crates/codegen/xai-grok-shell/src/session/acp_session_impl/hook_dispatch.rs
++++ b/crates/codegen/xai-grok-shell/src/session/acp_session_impl/hook_dispatch.rs
+@@ -1,4 +1,5 @@
+ use super::*;
++use crate::session::storage::StorageAdapter;
+ 
+ pub(super) fn turn_result_to_hook_outcome(
+     result: &Result<TurnOutcome, acp::Error>,
+@@ -242,6 +243,7 @@ impl SessionActor {
+         let results =
+             xai_grok_hooks::dispatcher::dispatch_non_blocking(&registry, event, &envelope, &ctx)
+                 .await;
++        self.apply_hook_observe_effects(&results).await;
+         self.send_hook_execution(&event.to_string(), tool_name, prompt_id, &results)
+             .await;
+         self.emit_hook_executed_telemetry(&event.to_string(), tool_name, &results)
+@@ -413,6 +415,61 @@ impl SessionActor {
+         gate.decision
+     }
+ 
++    /// Apply `sessionTitle` / `terminalSequence` harvested from observe or
++    /// stop hooks. Last non-empty title/sequence wins.
++    pub(super) async fn apply_hook_observe_effects(
++        &self,
++        results: &[xai_grok_hooks::result::HookRunResult],
++    ) {
++        let mut title = None;
++        let mut sequence = None;
++        for result in results {
++            let effects = result.observe_effects();
++            if effects.session_title.is_some() {
++                title = effects.session_title;
++            }
++            if effects.terminal_sequence.is_some() {
++                sequence = effects.terminal_sequence;
++            }
++        }
++        if let Some(title) = title {
++            self.apply_hook_session_title(&title).await;
++        }
++        if let Some(sequence) = sequence {
++            self.send_xai_notification_transient(XaiSessionUpdate::TerminalSequence { sequence });
++        }
++    }
++
++    pub(super) async fn apply_hook_session_title(&self, raw: &str) {
++        let Some(title) = crate::session::persistence::sanitize_and_cap_title(raw) else {
++            return;
++        };
++        let storage = crate::session::storage::jsonl::JsonlStorageAdapter::default();
++        if let Err(e) = storage
++            .update_session_title(&self.session_info, title.clone())
++            .await
++        {
++            tracing::warn!(error = %e, "hook sessionTitle persist failed");
++            return;
++        }
++        let _ = self
++            .notifications
++            .persistence_tx
++            .send(PersistenceMsg::ManualTitleRenamed(title.clone()));
++        self.on_title_renamed(true);
++        let extra = crate::extensions::notification::title_is_manual_meta()
++            .as_object()
++            .cloned();
++        self.send_xai_notification_with_extra_meta(
++            XaiSessionUpdate::SessionSummaryGenerated {
++                session_summary: title,
++            },
++            extra,
++            crate::session::storage::jsonl::AppendDurability::Buffered,
++        )
++        .await;
++    }
++
+     pub(super) async fn emit_hook_executed_telemetry(
+         &self,
+         event_name: &str,
+diff --git a/crates/codegen/xai-grok-shell/src/session/acp_session_impl/post_tool_use_delivery.rs b/crates/codegen/xai-grok-shell/src/session/acp_session_impl/post_tool_use_delivery.rs
+index 0250351..1e10b7c 100644
+--- a/crates/codegen/xai-grok-shell/src/session/acp_session_impl/post_tool_use_delivery.rs
++++ b/crates/codegen/xai-grok-shell/src/session/acp_session_impl/post_tool_use_delivery.rs
+@@ -54,6 +54,7 @@ fn downgrade_run(results: &mut [HookRunResult], run_index: usize, reason: &str)
+             elapsed,
+             http_info,
+             system_message,
++            ..
+         } = slot
+     {
+         tracing::debug!(
+diff --git a/crates/codegen/xai-grok-shell/src/session/acp_session_impl/post_tool_use_delivery_tests.rs b/crates/codegen/xai-grok-shell/src/session/acp_session_impl/post_tool_use_delivery_tests.rs
+index 79d05a1..4389461 100644
+--- a/crates/codegen/xai-grok-shell/src/session/acp_session_impl/post_tool_use_delivery_tests.rs
++++ b/crates/codegen/xai-grok-shell/src/session/acp_session_impl/post_tool_use_delivery_tests.rs
+@@ -14,12 +14,7 @@ fn plan(result: PostToolUseResult, output: &ToolsToolOutput) -> PostToolUseDeliv
+ }
+ 
+ fn success_run(hook_name: &str) -> HookRunResult {
+-    HookRunResult::Success {
+-        hook_name: hook_name.to_string(),
+-        elapsed: std::time::Duration::ZERO,
+-        http_info: None,
+-        system_message: None,
+-    }
++    HookRunResult::with_message(hook_name.to_string(), std::time::Duration::ZERO, None, None)
+ }
+ 
+ fn builtin_replacement(value: serde_json::Value) -> OutputReplacement {
+diff --git a/crates/codegen/xai-grok-shell/src/session/acp_session_impl/stop_gate.rs b/crates/codegen/xai-grok-shell/src/session/acp_session_impl/stop_gate.rs
+index 18bcaa6..8d0f71a 100644
+--- a/crates/codegen/xai-grok-shell/src/session/acp_session_impl/stop_gate.rs
++++ b/crates/codegen/xai-grok-shell/src/session/acp_session_impl/stop_gate.rs
+@@ -104,6 +104,8 @@ pub(super) fn demote_ignored_blocks(
+                 elapsed,
+                 http_info,
+                 system_message,
++                session_title: None,
++                terminal_sequence: None,
+             },
+             other => other,
+         })
+@@ -306,6 +308,14 @@ impl SessionActor {
+         if let Some(registry) = registry {
+             let ctx = self.hook_run_ctx();
+             result = dispatcher::dispatch_stop(&registry, event, &envelope, &ctx).await;
++            if let Some(title) = result.session_title.clone() {
++                self.apply_hook_session_title(&title).await;
++            }
++            if let Some(sequence) = result.terminal_sequence.clone() {
++                self.send_xai_notification_transient(
++                    crate::extensions::notification::SessionUpdate::TerminalSequence { sequence },
++                );
++            }
+         }
+ 
+         if let Some(prevent) = result.prevent_continuation.take() {
+diff --git a/crates/codegen/xai-grok-shell/src/session/acp_session_tests/tool_layer_images_bridge_tests.rs b/crates/codegen/xai-grok-shell/src/session/acp_session_tests/tool_layer_images_bridge_tests.rs
+index 63c41fc..e65cf0d 100644
+--- a/crates/codegen/xai-grok-shell/src/session/acp_session_tests/tool_layer_images_bridge_tests.rs
++++ b/crates/codegen/xai-grok-shell/src/session/acp_session_tests/tool_layer_images_bridge_tests.rs
+@@ -1,6 +1,7 @@
+ //! Wiring tests for MCP tool-layer images through `handle_bridge_tool_success`.
+ use super::support::*;
+ use super::*;
++use base64::Engine;
+ use xai_grok_sampling_types::{ContentPart, ConversationItem};
+ use xai_grok_tools::types::output::{MCPOutput, ToolOutput, ToolRunResult};
+ use xai_grok_tools::util::base64_images::{ExtractedImage, IMAGE_CONTENT_PLACEHOLDER};
+diff --git a/crates/codegen/xai-grok-shell/src/session/cli_rename.rs b/crates/codegen/xai-grok-shell/src/session/cli_rename.rs
+new file mode 100644
+index 0000000..13b824c
+--- /dev/null
++++ b/crates/codegen/xai-grok-shell/src/session/cli_rename.rs
+@@ -0,0 +1,146 @@
++//! `grok sessions rename` — persist a manual title (or unpin) without the TUI.
++//!
++//! Disk write uses the same `update_session_title` / `reset_title_to_auto`
++//! path as `x.ai/session/rename`. A running pager still needs the ACP
++//! notification to live-update; hook `sessionTitle` covers that for the
++//! in-session autoname path. This CLI is for dormant sessions, scripts, and
++//! the autoname `--print` + user `/rename` flow.
++
++use std::io;
++use std::path::PathBuf;
++
++use crate::session::info::Info;
++use crate::session::persistence::{
++    MAX_TITLE_SCALARS, sanitize_rename_title,
++};
++use crate::session::storage::{JsonlStorageAdapter, StorageAdapter};
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct CliRenameOutcome {
++    pub session_id: String,
++    pub cwd: String,
++    pub title: Option<String>,
++    pub reset: bool,
++}
++
++#[derive(Debug, thiserror::Error)]
++pub enum CliRenameError {
++    #[error("title must not be blank")]
++    BlankTitle,
++    #[error("title too long (max {MAX_TITLE_SCALARS} characters)")]
++    TitleTooLong,
++    #[error("no session found with id {0}")]
++    NotFound(String),
++    #[error("failed to list sessions: {0}")]
++    List(#[source] io::Error),
++    #[error("failed to update session title: {0}")]
++    Write(#[source] io::Error),
++}
++
++/// Rename (`Some(title)`) or unpin (`None`) the session `id` under `root`.
++pub async fn rename_session_in(
++    root: PathBuf,
++    id: &str,
++    title: Option<&str>,
++) -> Result<CliRenameOutcome, CliRenameError> {
++    let storage = JsonlStorageAdapter::with_root(root);
++    let summaries = storage
++        .list_sessions(None)
++        .await
++        .map_err(CliRenameError::List)?;
++    let summary = summaries
++        .iter()
++        .find(|s| s.info.id.0.as_ref() == id)
++        .ok_or_else(|| CliRenameError::NotFound(id.to_string()))?;
++    let info: Info = summary.info.clone();
++
++    if let Some(raw) = title {
++        let cleaned = sanitize_rename_title(raw);
++        if cleaned.is_empty() {
++            return Err(CliRenameError::BlankTitle);
++        }
++        if cleaned.chars().count() > MAX_TITLE_SCALARS {
++            return Err(CliRenameError::TitleTooLong);
++        }
++        let title = cleaned.into_owned();
++        storage
++            .update_session_title(&info, title.clone())
++            .await
++            .map_err(CliRenameError::Write)?;
++        crate::session::storage::search::notify_session_updated(
++            None,
++            &info.id.to_string(),
++            &info.cwd,
++        );
++        Ok(CliRenameOutcome {
++            session_id: id.to_string(),
++            cwd: info.cwd,
++            title: Some(title),
++            reset: false,
++        })
++    } else {
++        let _cleared = storage
++            .reset_title_to_auto(&info)
++            .await
++            .map_err(CliRenameError::Write)?;
++        crate::session::storage::search::notify_session_updated(
++            None,
++            &info.id.to_string(),
++            &info.cwd,
++        );
++        Ok(CliRenameOutcome {
++            session_id: id.to_string(),
++            cwd: info.cwd,
++            title: None,
++            reset: true,
++        })
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::session::persistence::default_model_id;
++    use tempfile::TempDir;
++
++    #[tokio::test]
++    async fn rename_pins_manual_title_and_reset_unpins() {
++        let temp = TempDir::new().unwrap();
++        let adapter = JsonlStorageAdapter::with_root(temp.path().to_path_buf());
++        let info = Info {
++            id: agent_client_protocol::SessionId::new("cli-rename-1"),
++            cwd: "/tmp/cli-rename".into(),
++        };
++        adapter
++            .init_session(&info, default_model_id())
++            .await
++            .unwrap();
++
++        let out = rename_session_in(
++            temp.path().to_path_buf(),
++            "cli-rename-1",
++            Some("parked-arx-console"),
++        )
++        .await
++        .unwrap();
++        assert_eq!(out.title.as_deref(), Some("parked-arx-console"));
++        let summary = adapter.load_summary(&info).await.unwrap();
++        assert!(summary.title_is_manual);
++        assert_eq!(summary.generated_title.as_deref(), Some("parked-arx-console"));
++
++        rename_session_in(temp.path().to_path_buf(), "cli-rename-1", None)
++            .await
++            .unwrap();
++        let summary = adapter.load_summary(&info).await.unwrap();
++        assert!(!summary.title_is_manual);
++
++        let err = rename_session_in(temp.path().to_path_buf(), "missing", Some("x"))
++            .await
++            .unwrap_err();
++        assert!(matches!(err, CliRenameError::NotFound(_)));
++        let err = rename_session_in(temp.path().to_path_buf(), "cli-rename-1", Some("   "))
++            .await
++            .unwrap_err();
++        assert!(matches!(err, CliRenameError::BlankTitle));
++    }
++}
+diff --git a/crates/codegen/xai-grok-shell/src/session/mod.rs b/crates/codegen/xai-grok-shell/src/session/mod.rs
+index 24b59e8..34b3956 100644
+--- a/crates/codegen/xai-grok-shell/src/session/mod.rs
++++ b/crates/codegen/xai-grok-shell/src/session/mod.rs
+@@ -548,6 +548,7 @@ pub mod memory;
+ pub(crate) mod memory_observation;
+ pub(crate) mod normalize_cache;
+ pub mod persistence;
++pub mod cli_rename;
+ pub use xai_grok_shared::placeholder_images;
+ pub mod plan_mode;
+ pub mod prompt_history;
+-- 
+2.55.0
+

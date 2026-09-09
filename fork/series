@@ -1,0 +1,3 @@
+# Product patches replayed onto upstream/main when rebase fails.
+# Tooling (this directory, scripts/, .github/) is a separate chore(fork) commit.
+0001-sessions-rename-and-hook-title.patch

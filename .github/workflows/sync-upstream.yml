@@ -1,0 +1,87 @@
+name: sync-upstream
+
+# Schedule only runs from the default branch (jkubo). Does not PR at xai-org.
+on:
+  schedule:
+    - cron: "17 17 * * *" # 02:17 JST
+  workflow_dispatch:
+  push:
+    branches: [jkubo]
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.sync.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: jkubo
+
+      - name: Fetch remotes
+        run: |
+          git remote add upstream https://github.com/xai-org/grok-build.git 2>/dev/null \
+            || git remote set-url upstream https://github.com/xai-org/grok-build.git
+          git config user.name "jkubo-sync[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Rebase onto upstream
+        id: sync
+        run: ./scripts/sync-upstream.sh --push --no-pull-origin
+
+      - name: Open issue on conflict
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          title="fork sync failed on $(date -u +%Y-%m-%d)"
+          # --repo pinned: gh's ambient-repo resolution prefers a remote named
+          # "upstream" over "origin" when both exist (this job adds one just
+          # above), so without --repo both calls below silently target
+          # xai-org/grok-build instead of this fork -- and xai-org/grok-build
+          # has issues disabled, so the failure report itself used to fail.
+          if gh issue list --repo "$GITHUB_REPOSITORY" --label fork-sync --state open --json title --jq '.[].title' | grep -Fxq "$title"; then
+            echo "issue already open"
+            exit 0
+          fi
+          gh issue create --repo "$GITHUB_REPOSITORY" --label fork-sync --title "$title" --body \
+            "\`scripts/sync-upstream.sh --push\` failed on \`${GITHUB_SHA}\`. Rebase/am of \`fork/patches\` onto \`xai-org/grok-build\` main did not apply. Runbook: FORK.md."
+
+  test:
+    needs: sync
+    if: >-
+      needs.sync.result == 'success' &&
+      (github.event_name != 'schedule' || needs.sync.outputs.changed == 'true')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.sync.outputs.sha }}
+          fetch-depth: 1
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94.0"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Test rename + hook allowlist
+        env:
+          PROTOC: /usr/bin/protoc
+        run: |
+          cargo test -p xai-grok-hooks --lib
+          cargo test -p xai-grok-shell --lib -- rename_pins_manual
