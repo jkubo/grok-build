@@ -334,6 +334,8 @@ Write human-readable diagnostics to **stderr**: it is the hook's feedback channe
 
 - **Block the stop**: `{"decision": "block", "reason": "The test suite hasn't been run yet"}`. The reason is fed back to the model as a user message and the agent runs another round in the same turn.
 - **Non-error feedback**: `{"hookSpecificOutput": {"hookEventName": "Stop", "additionalContext": "Run the linter before finishing"}}`. Also keeps the agent working, but is surfaced as hook feedback rather than a hook error.
+- **Session title (observe + Stop)**: `{"hookSpecificOutput": {"sessionTitle": "parked-arx-console"}}`. Pins `title_is_manual` and live-updates the TUI the same way `/rename` does. Do **not** send `additionalContext` on Stop just to rename — that keeps the agent working.
+- **Terminal sequence**: `{"hookSpecificOutput": {"terminalSequence": "\u001b]0;parked-arx-console\u0007"}}`. The TUI writes the sequence (never the hook's `/dev/tty`). Allowlist: OSC 0/1/2 (title), OSC 9/99/777 (notify), BEL. OSC 52 (clipboard) is rejected.
 - **Force stop**: `{"continue": false, "stopReason": "Budget exhausted"}`. Ends the turn, overriding any blocks.
 - **Allow the stop**: exit 0 with no output (or any non-JSON output).
 

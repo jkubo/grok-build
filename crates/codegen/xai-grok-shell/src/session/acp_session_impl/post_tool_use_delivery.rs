@@ -54,6 +54,7 @@ fn downgrade_run(results: &mut [HookRunResult], run_index: usize, reason: &str) 
             elapsed,
             http_info,
             system_message,
+            ..
         } = slot
     {
         tracing::debug!(

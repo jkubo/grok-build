@@ -14,12 +14,7 @@ fn plan(result: PostToolUseResult, output: &ToolsToolOutput) -> PostToolUseDeliv
 }
 
 fn success_run(hook_name: &str) -> HookRunResult {
-    HookRunResult::Success {
-        hook_name: hook_name.to_string(),
-        elapsed: std::time::Duration::ZERO,
-        http_info: None,
-        system_message: None,
-    }
+    HookRunResult::with_message(hook_name.to_string(), std::time::Duration::ZERO, None, None)
 }
 
 fn builtin_replacement(value: serde_json::Value) -> OutputReplacement {

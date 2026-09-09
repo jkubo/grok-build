@@ -90,6 +90,12 @@ impl NotificationService {
         }
     }
 
+    /// Write a hook `terminalSequence` (already allowlisted in the shell).
+    /// Bypasses the focus gate: the hook asked for this exact OSC.
+    pub fn emit_hook_sequence(&self, sequence: &str) {
+        protocol::emit_raw_sequence(sequence, self.terminal_ctx);
+    }
+
     /// Notifications bypass the frame pipeline: rare one-shot events that must not wait for the next draw (16ms away,
     /// or indefinitely while a frame ack is outstanding). For `ApprovalRequired` events, the caller must check
     /// [`should_suppress_permission_notification`] first.
