@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::io::Write;
 
 use crate::notifications::tmux;
 use crate::terminal::{MultiplexerKind, TerminalContext, TerminalName};
@@ -103,6 +104,27 @@ pub fn emit_notification(
 ) {
     if let Some(bytes) = notification_bytes(protocol, title, body, ctx) {
         writer.emit(bytes);
+    }
+}
+
+/// Write an already-allowlisted hook `terminalSequence` to stderr.
+/// Tmux gets DCS passthrough so the outer emulator sees OSC 0/9/99/777.
+pub fn emit_raw_sequence(sequence: &str, ctx: &TerminalContext) {
+    let Some(sequence) = xai_grok_shell::terminal_sequence::sanitize_terminal_sequence(sequence)
+    else {
+        return;
+    };
+    if ctx.is_tmux_backed() {
+        let wrapped = tmux::tmux_passthrough(&sequence);
+        xai_grok_shell::util::with_locked_stderr(|stderr| {
+            let _ = stderr.write_all(wrapped.as_bytes());
+            let _ = stderr.flush();
+        });
+    } else {
+        xai_grok_shell::util::with_locked_stderr(|stderr| {
+            let _ = stderr.write_all(sequence.as_bytes());
+            let _ = stderr.flush();
+        });
     }
 }
 

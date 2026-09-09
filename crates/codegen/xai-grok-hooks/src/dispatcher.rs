@@ -179,12 +179,12 @@ async fn dispatch_sequential_gate(
                 if let Some(text) = hook_additional_context {
                     record_additional_context(&mut additional_context, &spec.name, text);
                 }
-                run_results.push(HookRunResult::Success {
-                    hook_name: spec.name.clone(),
+                run_results.push(HookRunResult::with_message(
+                    spec.name.clone(),
                     elapsed,
                     http_info,
                     system_message,
-                });
+                ));
             }
             HookRunnerResult::Ask {
                 reason,
@@ -205,12 +205,12 @@ async fn dispatch_sequential_gate(
                     record_additional_context(&mut additional_context, &spec.name, text);
                 }
                 record_ask(&mut pending_ask, &spec.name, reason);
-                run_results.push(HookRunResult::Success {
-                    hook_name: spec.name.clone(),
+                run_results.push(HookRunResult::with_message(
+                    spec.name.clone(),
                     elapsed,
                     http_info,
                     system_message,
-                });
+                ));
             }
             HookRunnerResult::Defer => {
                 tracing::info!(
@@ -219,12 +219,12 @@ async fn dispatch_sequential_gate(
                     "hook deferred"
                 );
                 deferring_hook = Some(spec.name.clone());
-                run_results.push(HookRunResult::Success {
-                    hook_name: spec.name.clone(),
+                run_results.push(HookRunResult::with_message(
+                    spec.name.clone(),
                     elapsed,
                     http_info,
                     system_message,
-                });
+                ));
             }
             HookRunnerResult::Failed(err) => {
                 tracing::warn!(
@@ -243,18 +243,19 @@ async fn dispatch_sequential_gate(
             }
             HookRunnerResult::Success
             | HookRunnerResult::Stop(_)
-            | HookRunnerResult::PostToolUse { .. } => {
+            | HookRunnerResult::PostToolUse { .. }
+            | HookRunnerResult::Observe { .. } => {
                 tracing::info!(
                     hook_name = %spec.name,
                     elapsed_ms = elapsed.as_millis() as u64,
                     "hook completed"
                 );
-                run_results.push(HookRunResult::Success {
-                    hook_name: spec.name.clone(),
+                run_results.push(HookRunResult::with_message(
+                    spec.name.clone(),
                     elapsed,
                     http_info,
                     system_message,
-                });
+                ));
             }
         }
     }
@@ -384,6 +385,10 @@ pub struct StopDispatchResult {
     pub additional_context: Vec<String>,
     pub prevent_continuation: Option<StopBlock>,
     pub results: Vec<HookRunResult>,
+    /// Last non-empty `sessionTitle` from a stop hook.
+    pub session_title: Option<String>,
+    /// Last allowlisted `terminalSequence` from a stop hook.
+    pub terminal_sequence: Option<String>,
 }
 
 impl StopDispatchResult {
@@ -410,6 +415,12 @@ impl StopDispatchResult {
         if let Some(context) = signals.additional_context {
             self.additional_context.push(context);
         }
+        if let Some(title) = signals.session_title {
+            self.session_title = Some(title);
+        }
+        if let Some(seq) = signals.terminal_sequence {
+            self.terminal_sequence = Some(seq);
+        }
     }
 }
 
@@ -418,6 +429,8 @@ pub struct StopSignals {
     pub block_reason: Option<String>,
     pub stop_reason: Option<String>,
     pub additional_context: Option<String>,
+    pub session_title: Option<String>,
+    pub terminal_sequence: Option<String>,
 }
 
 pub fn stop_detail(
@@ -513,6 +526,8 @@ pub async fn dispatch_stop(
                         elapsed,
                         http_info,
                         system_message,
+                        session_title: outcome.session_title.clone(),
+                        terminal_sequence: outcome.terminal_sequence.clone(),
                     }),
                 }
                 out.absorb(
@@ -525,6 +540,8 @@ pub async fn dispatch_stop(
                                 .unwrap_or_else(|| "stopped by hook".to_string())
                         }),
                         additional_context: outcome.additional_context,
+                        session_title: outcome.session_title,
+                        terminal_sequence: outcome.terminal_sequence,
                     },
                 );
             }
@@ -549,13 +566,14 @@ pub async fn dispatch_stop(
             | HookRunnerResult::Defer
             | HookRunnerResult::Deny { .. }
             | HookRunnerResult::Block { .. }
-            | HookRunnerResult::PostToolUse { .. } => {
-                out.results.push(HookRunResult::Success {
-                    hook_name: spec.name.clone(),
+            | HookRunnerResult::PostToolUse { .. }
+            | HookRunnerResult::Observe { .. } => {
+                out.results.push(HookRunResult::with_message(
+                    spec.name.clone(),
                     elapsed,
                     http_info,
                     system_message,
-                });
+                ));
             }
         }
     }
@@ -713,12 +731,12 @@ pub async fn dispatch_post_tool_use(
                         http_info,
                         system_message,
                     },
-                    None => HookRunResult::Success {
-                        hook_name: spec.name.clone(),
+                    None => HookRunResult::with_message(
+                        spec.name.clone(),
                         elapsed,
                         http_info,
                         system_message,
-                    },
+                    ),
                 });
                 let run_index = out.results.len() - 1;
                 out.absorb(&spec.name, run_index, outcome);
@@ -744,13 +762,14 @@ pub async fn dispatch_post_tool_use(
             | HookRunnerResult::Defer
             | HookRunnerResult::Deny { .. }
             | HookRunnerResult::Block { .. }
-            | HookRunnerResult::Stop(_) => {
-                out.results.push(HookRunResult::Success {
-                    hook_name: spec.name.clone(),
+            | HookRunnerResult::Stop(_)
+            | HookRunnerResult::Observe { .. } => {
+                out.results.push(HookRunResult::with_message(
+                    spec.name.clone(),
                     elapsed,
                     http_info,
                     system_message,
-                });
+                ));
             }
         }
     }
@@ -821,12 +840,12 @@ pub async fn dispatch_post_tool_use_failure(
                         http_info,
                         system_message,
                     },
-                    None => HookRunResult::Success {
-                        hook_name: spec.name.clone(),
+                    None => HookRunResult::with_message(
+                        spec.name.clone(),
                         elapsed,
                         http_info,
                         system_message,
-                    },
+                    ),
                 });
             }
             HookRunnerResult::Failed(err) => {
@@ -850,13 +869,14 @@ pub async fn dispatch_post_tool_use_failure(
             | HookRunnerResult::Defer
             | HookRunnerResult::Deny { .. }
             | HookRunnerResult::Block { .. }
-            | HookRunnerResult::Stop(_) => {
-                out.results.push(HookRunResult::Success {
-                    hook_name: spec.name.clone(),
+            | HookRunnerResult::Stop(_)
+            | HookRunnerResult::Observe { .. } => {
+                out.results.push(HookRunResult::with_message(
+                    spec.name.clone(),
                     elapsed,
                     http_info,
                     system_message,
-                });
+                ));
             }
         }
     }
@@ -908,11 +928,26 @@ pub async fn dispatch_non_blocking(
                     elapsed_ms = elapsed.as_millis() as u64,
                     "hook completed"
                 );
+                results.push(HookRunResult::with_message(
+                    spec.name.clone(),
+                    elapsed,
+                    http_info,
+                    system_message,
+                ));
+            }
+            HookRunnerResult::Observe { effects } => {
+                tracing::info!(
+                    hook_name = %spec.name,
+                    elapsed_ms = elapsed.as_millis() as u64,
+                    "hook completed with observe effects"
+                );
                 results.push(HookRunResult::Success {
                     hook_name: spec.name.clone(),
                     elapsed,
                     http_info,
                     system_message,
+                    session_title: effects.session_title,
+                    terminal_sequence: effects.terminal_sequence,
                 });
             }
             HookRunnerResult::Failed(err) => {
@@ -940,12 +975,12 @@ pub async fn dispatch_non_blocking(
                     elapsed_ms = elapsed.as_millis() as u64,
                     "hook completed"
                 );
-                results.push(HookRunResult::Success {
-                    hook_name: spec.name.clone(),
+                results.push(HookRunResult::with_message(
+                    spec.name.clone(),
                     elapsed,
                     http_info,
                     system_message,
-                });
+                ));
             }
             HookRunnerResult::Stop(_) | HookRunnerResult::PostToolUse { .. } => {
                 results.push(HookRunResult::Failed {
@@ -2167,11 +2202,8 @@ mod tests {
 
     #[test]
     fn merge_appends_results_blocks_and_context() {
-        let success = |name: &str| HookRunResult::Success {
-            hook_name: name.to_string(),
-            elapsed: std::time::Duration::ZERO,
-            http_info: None,
-            system_message: None,
+        let success = |name: &str| {
+            HookRunResult::with_message(name.to_string(), std::time::Duration::ZERO, None, None)
         };
         let block = |name: &str| PostToolUseBlock {
             hook_name: name.to_string(),

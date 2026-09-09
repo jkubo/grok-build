@@ -104,6 +104,8 @@ pub(super) fn demote_ignored_blocks(
                 elapsed,
                 http_info,
                 system_message,
+                session_title: None,
+                terminal_sequence: None,
             },
             other => other,
         })
@@ -300,6 +302,14 @@ impl SessionActor {
             let ctx = self.hook_run_ctx();
             let batch = self.announce_hook_run(&registry, &envelope, &ctx);
             result = dispatcher::dispatch_stop(&registry, event, &envelope, &ctx).await;
+            if let Some(title) = result.session_title.clone() {
+                self.apply_hook_session_title(&title).await;
+            }
+            if let Some(sequence) = result.terminal_sequence.clone() {
+                self.send_xai_notification_transient(
+                    crate::extensions::notification::SessionUpdate::TerminalSequence { sequence },
+                );
+            }
             batch
         } else {
             HookBatch::from_envelope(&envelope)

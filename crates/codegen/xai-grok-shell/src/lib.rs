@@ -47,6 +47,7 @@ pub mod remote;
 pub mod sampling;
 pub mod session;
 pub use xai_grok_shell_terminal as terminal;
+pub use xai_grok_hooks::terminal_sequence;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub mod tier;

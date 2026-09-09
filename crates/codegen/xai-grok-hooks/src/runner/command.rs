@@ -27,7 +27,8 @@ use crate::result::StopHookOutcome;
 use super::{
     GateHookJson, GateKind, GateOutcome, HookHealth, HookRunnerResult, PostToolUseHookJson,
     PostToolUseParse, PromptHookJson, RunContext, StopHookJson, extract_system_message,
-    gate_outcome, post_tool_use_json_to_outcome, prompt_json_to_block, stop_json_to_outcome,
+    gate_outcome, parse_observe_effects, post_tool_use_json_to_outcome, prompt_json_to_block,
+    stop_json_to_outcome,
 };
 
 const CAPTURE_HEADROOM_OVER_REPLACEMENT: usize = 16;
@@ -330,7 +331,12 @@ pub async fn run_command_hook(
             let (result, elapsed) = match mode {
                 GateKind::Observe => {
                     if exit_code == 0 {
-                        (HookRunnerResult::Success, elapsed)
+                        let effects = parse_observe_effects(stdout.as_bytes());
+                        if effects.is_empty() {
+                            (HookRunnerResult::Success, elapsed)
+                        } else {
+                            (HookRunnerResult::Observe { effects }, elapsed)
+                        }
                     } else {
                         (failed_with_exit_code(exit_code, &stderr), elapsed)
                     }
@@ -1704,6 +1710,28 @@ mod tests {
         );
         let (result, _) = parse_stop_result(r#"{"continue":true}"#, "", 0, "s", Duration::ZERO);
         assert!(stop_outcome(result).is_empty());
+    }
+
+    #[test]
+    fn observe_json_harvests_session_title_and_allowlisted_osc() {
+        let effects = super::parse_observe_effects(
+            br#"{"hookSpecificOutput":{"sessionTitle":"parked-arx-console","terminalSequence":"\u001b]0;parked-arx-console\u0007"}}"#,
+        );
+        assert_eq!(effects.session_title.as_deref(), Some("parked-arx-console"));
+        assert!(
+            effects
+                .terminal_sequence
+                .as_deref()
+                .unwrap()
+                .starts_with("\u{1b}]0;")
+        );
+
+        let rejected = super::parse_observe_effects(
+            br#"{"hookSpecificOutput":{"terminalSequence":"\u001b]52;c;QUFB\u0007"}}"#,
+        );
+        assert!(rejected.terminal_sequence.is_none());
+        let empty = super::parse_observe_effects(b"not json");
+        assert!(empty.is_empty());
     }
 
     #[test]

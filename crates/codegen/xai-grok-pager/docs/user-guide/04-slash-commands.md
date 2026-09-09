@@ -94,6 +94,8 @@ Rename the current session. Alias: `/title`.
 
 `--auto` unpins a manual title and lets auto-titling resume. It applies to Build sessions only — chat conversations have no local auto-titler. It must be the only argument (`/rename --auto Something` is an error). A session cannot be named `--auto` via this command; use the dashboard rename editor (`Ctrl+R`) for that pathological case.
 
+CLI equivalent (no TUI): `grok sessions rename <id> <title>` or `grok sessions rename <id> --reset-to-auto`. That command is **not** `/rename --auto` invent — `--auto` remains unpin.
+
 ---
 
 ## Model and Mode
