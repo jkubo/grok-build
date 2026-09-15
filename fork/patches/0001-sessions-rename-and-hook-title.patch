@@ -1,4 +1,4 @@
-From a9bfe6dfc10e0ddb0bfd52dd5a8b6ef3040054b3 Mon Sep 17 00:00:00 2001
+From a7f26419f5f7aff12b97f5ed89451a81c96d3e28 Mon Sep 17 00:00:00 2001
 From: claudeus <claudeus@kub0.ai>
 Date: Wed, 9 Sep 2026 11:20:54 +0900
 Subject: [PATCH] Add sessions rename CLI and hook
@@ -116,10 +116,10 @@ index 0000000..f8f50f4
 +
 +A running TUI keeps the old ELF until you `/quit` and start `grok` again.
 diff --git a/crates/codegen/xai-grok-hooks/src/dispatcher.rs b/crates/codegen/xai-grok-hooks/src/dispatcher.rs
-index ba4544a..1e10639 100644
+index 4bf9a42..323dca6 100644
 --- a/crates/codegen/xai-grok-hooks/src/dispatcher.rs
 +++ b/crates/codegen/xai-grok-hooks/src/dispatcher.rs
-@@ -166,12 +166,12 @@ async fn dispatch_sequential_gate(
+@@ -184,12 +184,12 @@ async fn dispatch_sequential_gate(
                  if let Some(text) = hook_additional_context {
                      record_additional_context(&mut additional_context, &spec.name, text);
                  }
@@ -135,7 +135,7 @@ index ba4544a..1e10639 100644
              }
              HookRunnerResult::Ask {
                  reason,
-@@ -192,12 +192,12 @@ async fn dispatch_sequential_gate(
+@@ -210,12 +210,12 @@ async fn dispatch_sequential_gate(
                      record_additional_context(&mut additional_context, &spec.name, text);
                  }
                  record_ask(&mut pending_ask, &spec.name, reason);
@@ -151,7 +151,7 @@ index ba4544a..1e10639 100644
              }
              HookRunnerResult::Defer => {
                  tracing::info!(
-@@ -206,12 +206,12 @@ async fn dispatch_sequential_gate(
+@@ -224,12 +224,12 @@ async fn dispatch_sequential_gate(
                      "hook deferred"
                  );
                  deferring_hook = Some(spec.name.clone());
@@ -167,7 +167,7 @@ index ba4544a..1e10639 100644
              }
              HookRunnerResult::Failed(err) => {
                  tracing::warn!(
-@@ -230,18 +230,19 @@ async fn dispatch_sequential_gate(
+@@ -248,18 +248,19 @@ async fn dispatch_sequential_gate(
              }
              HookRunnerResult::Success
              | HookRunnerResult::Stop(_)
@@ -191,7 +191,7 @@ index ba4544a..1e10639 100644
              }
          }
      }
-@@ -371,6 +372,10 @@ pub struct StopDispatchResult {
+@@ -389,6 +390,10 @@ pub struct StopDispatchResult {
      pub additional_context: Vec<String>,
      pub prevent_continuation: Option<StopBlock>,
      pub results: Vec<HookRunResult>,
@@ -202,7 +202,7 @@ index ba4544a..1e10639 100644
  }
  
  impl StopDispatchResult {
-@@ -397,6 +402,12 @@ impl StopDispatchResult {
+@@ -415,6 +420,12 @@ impl StopDispatchResult {
          if let Some(context) = signals.additional_context {
              self.additional_context.push(context);
          }
@@ -215,7 +215,7 @@ index ba4544a..1e10639 100644
      }
  }
  
-@@ -405,6 +416,8 @@ pub struct StopSignals {
+@@ -423,6 +434,8 @@ pub struct StopSignals {
      pub block_reason: Option<String>,
      pub stop_reason: Option<String>,
      pub additional_context: Option<String>,
@@ -224,7 +224,7 @@ index ba4544a..1e10639 100644
  }
  
  pub fn stop_detail(
-@@ -496,6 +509,8 @@ pub async fn dispatch_stop(
+@@ -518,6 +531,8 @@ pub async fn dispatch_stop(
                          elapsed,
                          http_info,
                          system_message,
@@ -233,7 +233,7 @@ index ba4544a..1e10639 100644
                      }),
                  }
                  out.absorb(
-@@ -508,6 +523,8 @@ pub async fn dispatch_stop(
+@@ -530,6 +545,8 @@ pub async fn dispatch_stop(
                                  .unwrap_or_else(|| "stopped by hook".to_string())
                          }),
                          additional_context: outcome.additional_context,
@@ -242,7 +242,7 @@ index ba4544a..1e10639 100644
                      },
                  );
              }
-@@ -532,13 +549,14 @@ pub async fn dispatch_stop(
+@@ -554,13 +571,14 @@ pub async fn dispatch_stop(
              | HookRunnerResult::Defer
              | HookRunnerResult::Deny { .. }
              | HookRunnerResult::Block { .. }
@@ -261,7 +261,7 @@ index ba4544a..1e10639 100644
              }
          }
      }
-@@ -692,12 +710,12 @@ pub async fn dispatch_post_tool_use(
+@@ -718,12 +736,12 @@ pub async fn dispatch_post_tool_use(
                          http_info,
                          system_message,
                      },
@@ -277,7 +277,7 @@ index ba4544a..1e10639 100644
                  });
                  let run_index = out.results.len() - 1;
                  out.absorb(&spec.name, run_index, outcome);
-@@ -723,13 +741,14 @@ pub async fn dispatch_post_tool_use(
+@@ -749,13 +767,14 @@ pub async fn dispatch_post_tool_use(
              | HookRunnerResult::Defer
              | HookRunnerResult::Deny { .. }
              | HookRunnerResult::Block { .. }
@@ -296,7 +296,7 @@ index ba4544a..1e10639 100644
              }
          }
      }
-@@ -796,12 +815,12 @@ pub async fn dispatch_post_tool_use_failure(
+@@ -826,12 +845,12 @@ pub async fn dispatch_post_tool_use_failure(
                          http_info,
                          system_message,
                      },
@@ -312,7 +312,7 @@ index ba4544a..1e10639 100644
                  });
              }
              HookRunnerResult::Failed(err) => {
-@@ -825,13 +844,14 @@ pub async fn dispatch_post_tool_use_failure(
+@@ -855,13 +874,14 @@ pub async fn dispatch_post_tool_use_failure(
              | HookRunnerResult::Defer
              | HookRunnerResult::Deny { .. }
              | HookRunnerResult::Block { .. }
@@ -331,7 +331,7 @@ index ba4544a..1e10639 100644
              }
          }
      }
-@@ -884,11 +904,26 @@ pub async fn dispatch_non_blocking(
+@@ -913,11 +933,26 @@ pub async fn dispatch_non_blocking(
                      elapsed_ms = elapsed.as_millis() as u64,
                      "hook completed"
                  );
@@ -358,7 +358,7 @@ index ba4544a..1e10639 100644
                  });
              }
              HookRunnerResult::Failed(err) => {
-@@ -916,12 +951,12 @@ pub async fn dispatch_non_blocking(
+@@ -945,12 +980,12 @@ pub async fn dispatch_non_blocking(
                      elapsed_ms = elapsed.as_millis() as u64,
                      "hook completed"
                  );
@@ -374,7 +374,7 @@ index ba4544a..1e10639 100644
              }
              HookRunnerResult::Stop(_) | HookRunnerResult::PostToolUse { .. } => {
                  results.push(HookRunResult::Failed {
-@@ -2101,11 +2136,8 @@ mod tests {
+@@ -2131,11 +2166,8 @@ mod tests {
  
      #[test]
      fn merge_appends_results_blocks_and_context() {
@@ -491,7 +491,7 @@ index 09acfa1..6c33fdc 100644
 +}
 +
 diff --git a/crates/codegen/xai-grok-hooks/src/runner/command.rs b/crates/codegen/xai-grok-hooks/src/runner/command.rs
-index b550257..0eea052 100644
+index 4642b30..65b11a7 100644
 --- a/crates/codegen/xai-grok-hooks/src/runner/command.rs
 +++ b/crates/codegen/xai-grok-hooks/src/runner/command.rs
 @@ -27,7 +27,8 @@ use crate::result::StopHookOutcome;
@@ -516,9 +516,9 @@ index b550257..0eea052 100644
 +                            (HookRunnerResult::Observe { effects }, elapsed)
 +                        }
                      } else {
-                         (
-                             HookRunnerResult::Failed(append_stderr_line(
-@@ -1672,6 +1678,28 @@ mod tests {
+                         (failed_with_exit_code(exit_code, &stderr), elapsed)
+                     }
+@@ -1658,6 +1664,28 @@ mod tests {
          assert!(stop_outcome(result).is_empty());
      }
  
@@ -548,7 +548,7 @@ index b550257..0eea052 100644
      fn stop_allow_failure_and_unknown_decision() {
          let (result, _) = parse_stop_result("", "", 0, "s", Duration::ZERO);
 diff --git a/crates/codegen/xai-grok-hooks/src/runner/http.rs b/crates/codegen/xai-grok-hooks/src/runner/http.rs
-index 6971ea1..6a0b172 100644
+index 1dbbd06..651828f 100644
 --- a/crates/codegen/xai-grok-hooks/src/runner/http.rs
 +++ b/crates/codegen/xai-grok-hooks/src/runner/http.rs
 @@ -10,7 +10,7 @@ use crate::result::{HttpInfo, StopHookOutcome};
@@ -577,10 +577,10 @@ index 6971ea1..6a0b172 100644
      };
      (result, elapsed, http_info, system_message)
 diff --git a/crates/codegen/xai-grok-hooks/src/runner/mod.rs b/crates/codegen/xai-grok-hooks/src/runner/mod.rs
-index 4db6f2a..34c32f4 100644
+index 4b54f19..e89e3a1 100644
 --- a/crates/codegen/xai-grok-hooks/src/runner/mod.rs
 +++ b/crates/codegen/xai-grok-hooks/src/runner/mod.rs
-@@ -45,6 +45,10 @@ pub enum HookRunnerResult {
+@@ -53,6 +53,10 @@ pub enum HookRunnerResult {
          failure: Option<String>,
      },
      Success,
@@ -591,7 +591,7 @@ index 4db6f2a..34c32f4 100644
      Failed(String),
  }
  
-@@ -72,6 +76,13 @@ pub(crate) struct GateHookSpecificOutputJson {
+@@ -80,6 +84,13 @@ pub(crate) struct GateHookSpecificOutputJson {
      updated_input: Option<serde_json::Value>,
      #[serde(default)]
      additional_context: Option<serde_json::Value>,
@@ -605,7 +605,7 @@ index 4db6f2a..34c32f4 100644
      #[serde(flatten)]
      rest: serde_json::Map<String, serde_json::Value>,
  }
-@@ -188,7 +199,7 @@ impl GateHookJson {
+@@ -196,7 +207,7 @@ impl GateHookJson {
  }
  
  const SILENTLY_IGNORED_TOP_LEVEL_KEYS: &[&str] = &["hookEventName", "continue", "systemMessage"];
@@ -614,7 +614,7 @@ index 4db6f2a..34c32f4 100644
  
  fn non_empty(text: Option<&str>) -> Option<&str> {
      let trimmed = text?.trim();
-@@ -405,6 +416,10 @@ pub(crate) struct StopHookJson {
+@@ -411,6 +422,10 @@ pub(crate) struct StopHookJson {
  pub(crate) struct StopHookSpecificOutputJson {
      #[serde(default, rename = "additionalContext")]
      pub additional_context: Option<String>,
@@ -625,8 +625,8 @@ index 4db6f2a..34c32f4 100644
  }
  
  pub(crate) fn stop_json_to_outcome(
-@@ -424,16 +439,23 @@ pub(crate) fn stop_json_to_outcome(
-             ));
+@@ -428,16 +443,23 @@ pub(crate) fn stop_json_to_outcome(
+             return Err(format!("unknown decision value '{other}'"));
          }
      };
 +    let output = json.hook_specific_output.unwrap_or_default();
@@ -652,7 +652,7 @@ index 4db6f2a..34c32f4 100644
      })
  }
  
-@@ -538,6 +560,37 @@ pub(crate) fn post_tool_use_json_to_outcome(
+@@ -542,6 +564,37 @@ pub(crate) fn post_tool_use_json_to_outcome(
      }
  }
  
@@ -782,7 +782,7 @@ index 6c928d7..59d16d7 100644
  
  ## Model and Mode
 diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/10-hooks.md b/crates/codegen/xai-grok-pager/docs/user-guide/10-hooks.md
-index 6ee2802..6babee0 100644
+index 9fa90a1..ca83cdd 100644
 --- a/crates/codegen/xai-grok-pager/docs/user-guide/10-hooks.md
 +++ b/crates/codegen/xai-grok-pager/docs/user-guide/10-hooks.md
 @@ -334,6 +334,8 @@ Write human-readable diagnostics to **stderr**: it is the hook's feedback channe
@@ -814,10 +814,10 @@ index 9488431..c30d251 100644
  
  ## The /rewind Command
 diff --git a/crates/codegen/xai-grok-pager/src/app/acp_handler/session_notification.rs b/crates/codegen/xai-grok-pager/src/app/acp_handler/session_notification.rs
-index 65b39d3..d8e830e 100644
+index d90b3ba..4255856 100644
 --- a/crates/codegen/xai-grok-pager/src/app/acp_handler/session_notification.rs
 +++ b/crates/codegen/xai-grok-pager/src/app/acp_handler/session_notification.rs
-@@ -291,6 +291,7 @@ pub(super) fn handle_session_notification_with_origin(
+@@ -286,6 +286,7 @@ pub(super) fn handle_session_notification_with_origin(
      let mut terminal_outcome: Option<super::super::turn_completion::TerminalApply> = None;
      let mut pending_finish_for_spawn = None;
      let root_session_id: &str = session_notif.session_id.0.as_ref();
@@ -825,7 +825,7 @@ index 65b39d3..d8e830e 100644
      let changed = match session_notif.update {
          ref update @ (XaiSessionUpdate::AutoCompactStarted { .. }
          | XaiSessionUpdate::AutoCompactCompleted { .. }
-@@ -1081,6 +1082,10 @@ pub(super) fn handle_session_notification_with_origin(
+@@ -1021,6 +1022,10 @@ pub(super) fn handle_session_notification_with_origin(
              }
              true
          }
@@ -836,7 +836,7 @@ index 65b39d3..d8e830e 100644
          XaiSessionUpdate::LastTurnSummary {
              summary,
              prompt_id: _,
-@@ -1348,6 +1353,9 @@ pub(super) fn handle_session_notification_with_origin(
+@@ -1288,6 +1293,9 @@ pub(super) fn handle_session_notification_with_origin(
          }
      };
      let mut changed = changed;
@@ -962,10 +962,10 @@ index 6e4a033..5ad17d1 100644
  
      Ok(())
 diff --git a/crates/codegen/xai-grok-shell/src/extensions/notification.rs b/crates/codegen/xai-grok-shell/src/extensions/notification.rs
-index 4f049d1..18f2db3 100644
+index cb7e5ab..c7a0a58 100644
 --- a/crates/codegen/xai-grok-shell/src/extensions/notification.rs
 +++ b/crates/codegen/xai-grok-shell/src/extensions/notification.rs
-@@ -586,6 +586,12 @@ pub enum SessionUpdate {
+@@ -618,6 +618,12 @@ pub enum SessionUpdate {
          /// The generated session summary/title
          session_summary: String,
      },
@@ -991,10 +991,10 @@ index f397ede..d6f27b6 100644
  pub(crate) mod test_support;
  pub mod tier;
 diff --git a/crates/codegen/xai-grok-shell/src/session/acp_session/hooks.rs b/crates/codegen/xai-grok-shell/src/session/acp_session/hooks.rs
-index 247736d..6a1765d 100644
+index d9e4d97..009c0be 100644
 --- a/crates/codegen/xai-grok-shell/src/session/acp_session/hooks.rs
 +++ b/crates/codegen/xai-grok-shell/src/session/acp_session/hooks.rs
-@@ -430,12 +430,12 @@ impl SessionActor {
+@@ -436,12 +436,12 @@ impl SessionActor {
                      http_info: None,
                      system_message: None,
                  },
@@ -1012,7 +1012,7 @@ index 247736d..6a1765d 100644
              });
  
              out.absorb(
-@@ -447,6 +447,8 @@ impl SessionActor {
+@@ -453,6 +453,8 @@ impl SessionActor {
                          .additional_context
                          .filter(|c| !c.trim().is_empty())
                          .map(|c| clip_text(&c, MAX_HOOK_FEEDBACK_CHARS)),
@@ -1021,7 +1021,7 @@ index 247736d..6a1765d 100644
                  },
              );
          }
-@@ -488,12 +490,12 @@ impl SessionActor {
+@@ -494,12 +496,12 @@ impl SessionActor {
                  });
                  continue;
              }
@@ -1040,7 +1040,7 @@ index 247736d..6a1765d 100644
                  let reason = response
                      .system_message
 diff --git a/crates/codegen/xai-grok-shell/src/session/acp_session_impl/hook_dispatch.rs b/crates/codegen/xai-grok-shell/src/session/acp_session_impl/hook_dispatch.rs
-index 90e1a45..91f485e 100644
+index 57df4e6..0752881 100644
 --- a/crates/codegen/xai-grok-shell/src/session/acp_session_impl/hook_dispatch.rs
 +++ b/crates/codegen/xai-grok-shell/src/session/acp_session_impl/hook_dispatch.rs
 @@ -1,4 +1,5 @@
@@ -1049,15 +1049,15 @@ index 90e1a45..91f485e 100644
  
  pub(super) fn turn_result_to_hook_outcome(
      result: &Result<TurnOutcome, acp::Error>,
-@@ -242,6 +243,7 @@ impl SessionActor {
+@@ -292,6 +293,7 @@ impl SessionActor {
          let results =
              xai_grok_hooks::dispatcher::dispatch_non_blocking(&registry, event, &envelope, &ctx)
                  .await;
 +        self.apply_hook_observe_effects(&results).await;
-         self.send_hook_execution(&event.to_string(), tool_name, prompt_id, &results)
+         self.send_hook_execution(&batch, &results).await;
+         self.emit_hook_executed_telemetry(&batch.event_name, batch.tool_name.as_deref(), &results)
              .await;
-         self.emit_hook_executed_telemetry(&event.to_string(), tool_name, &results)
-@@ -413,6 +415,61 @@ impl SessionActor {
+@@ -465,6 +467,61 @@ impl SessionActor {
          gate.decision
      }
  
@@ -1150,7 +1150,7 @@ index 79d05a1..4389461 100644
  
  fn builtin_replacement(value: serde_json::Value) -> OutputReplacement {
 diff --git a/crates/codegen/xai-grok-shell/src/session/acp_session_impl/stop_gate.rs b/crates/codegen/xai-grok-shell/src/session/acp_session_impl/stop_gate.rs
-index 18bcaa6..8d0f71a 100644
+index a32aeea..1c4f799 100644
 --- a/crates/codegen/xai-grok-shell/src/session/acp_session_impl/stop_gate.rs
 +++ b/crates/codegen/xai-grok-shell/src/session/acp_session_impl/stop_gate.rs
 @@ -104,6 +104,8 @@ pub(super) fn demote_ignored_blocks(
@@ -1162,9 +1162,9 @@ index 18bcaa6..8d0f71a 100644
              },
              other => other,
          })
-@@ -306,6 +308,14 @@ impl SessionActor {
-         if let Some(registry) = registry {
+@@ -300,6 +302,14 @@ impl SessionActor {
              let ctx = self.hook_run_ctx();
+             let batch = self.announce_hook_run(&registry, &envelope, &ctx);
              result = dispatcher::dispatch_stop(&registry, event, &envelope, &ctx).await;
 +            if let Some(title) = result.session_title.clone() {
 +                self.apply_hook_session_title(&title).await;
@@ -1174,9 +1174,9 @@ index 18bcaa6..8d0f71a 100644
 +                    crate::extensions::notification::SessionUpdate::TerminalSequence { sequence },
 +                );
 +            }
-         }
- 
-         if let Some(prevent) = result.prevent_continuation.take() {
+             batch
+         } else {
+             HookBatch::from_envelope(&envelope)
 diff --git a/crates/codegen/xai-grok-shell/src/session/acp_session_tests/tool_layer_images_bridge_tests.rs b/crates/codegen/xai-grok-shell/src/session/acp_session_tests/tool_layer_images_bridge_tests.rs
 index 63c41fc..e65cf0d 100644
 --- a/crates/codegen/xai-grok-shell/src/session/acp_session_tests/tool_layer_images_bridge_tests.rs
@@ -1342,13 +1342,13 @@ index 0000000..13b824c
 +    }
 +}
 diff --git a/crates/codegen/xai-grok-shell/src/session/mod.rs b/crates/codegen/xai-grok-shell/src/session/mod.rs
-index 24b59e8..34b3956 100644
+index 5dd9082..5368535 100644
 --- a/crates/codegen/xai-grok-shell/src/session/mod.rs
 +++ b/crates/codegen/xai-grok-shell/src/session/mod.rs
-@@ -548,6 +548,7 @@ pub mod memory;
- pub(crate) mod memory_observation;
+@@ -553,6 +553,7 @@ pub(crate) mod memory_observation;
  pub(crate) mod normalize_cache;
  pub mod persistence;
+ pub(crate) mod session_create_prefetch;
 +pub mod cli_rename;
  pub use xai_grok_shared::placeholder_images;
  pub mod plan_mode;
