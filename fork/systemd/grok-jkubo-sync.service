@@ -1,0 +1,13 @@
+[Unit]
+Description=Rebase grok-jkubo onto xai-org/grok-build and rebuild if needed
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/jkubo/Projects/grok-build
+Environment=PATH=/home/jkubo/.local/bin:/usr/bin
+Nice=10
+TimeoutStartSec=3h
+ExecStart=/home/jkubo/Projects/grok-build/scripts/sync-upstream.sh --push --build --install
+StandardOutput=append:/home/jkubo/.local/state/grok-jkubo/sync.log
+StandardError=append:/home/jkubo/.local/state/grok-jkubo/sync.log
