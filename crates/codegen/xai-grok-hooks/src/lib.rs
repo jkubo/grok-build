@@ -47,6 +47,7 @@ pub mod event;
 pub mod matcher;
 pub mod result;
 pub mod runner;
+pub mod terminal_sequence;
 #[cfg(test)]
 mod test_support;
 pub mod trust;

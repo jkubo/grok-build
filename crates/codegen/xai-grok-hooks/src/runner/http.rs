@@ -10,7 +10,7 @@ use crate::result::{HttpInfo, StopHookOutcome};
 use super::command::MAX_OUTPUT_BYTES;
 use super::{
     GateKind, GateOutcome, HookHealth, HookRunOutput, HookRunnerResult, PostToolUseHookJson,
-    PromptHookJson, RunContext, StopHookJson, extract_system_message,
+    PromptHookJson, RunContext, StopHookJson, extract_system_message, parse_observe_effects,
     post_tool_use_json_to_outcome, prompt_json_to_block, stop_json_to_outcome,
 };
 
@@ -284,7 +284,14 @@ pub async fn run_http_hook(
         GateKind::Stop => parse_http_stop_result(&response_text, status, &spec.name),
         GateKind::PostTool => parse_http_post_tool_use_result(&response_text, status, &spec.name),
         GateKind::Prompt => parse_http_prompt_result(&response_text, status, &spec.name),
-        GateKind::Observe if status.is_success() => HookRunnerResult::Success,
+        GateKind::Observe if status.is_success() => {
+            let effects = parse_observe_effects(response_text.as_bytes());
+            if effects.is_empty() {
+                HookRunnerResult::Success
+            } else {
+                HookRunnerResult::Observe { effects }
+            }
+        }
         GateKind::Observe => HookRunnerResult::Failed(format!("HTTP status {status}")),
     };
     (result, elapsed, http_info, system_message)

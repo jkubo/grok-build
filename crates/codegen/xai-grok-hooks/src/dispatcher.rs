@@ -181,12 +181,12 @@ async fn dispatch_sequential_gate(
                     if let Some(text) = hook_additional_context {
                         record_additional_context(&mut additional_context, &spec.name, text);
                     }
-                    run_results.push(HookRunResult::Success {
-                        hook_name: spec.name.clone(),
+                    run_results.push(HookRunResult::with_message(
+                        spec.name.clone(),
                         elapsed,
                         http_info,
                         system_message,
-                    });
+                    ));
                 }
                 HookRunnerResult::Ask {
                     reason,
@@ -207,12 +207,12 @@ async fn dispatch_sequential_gate(
                         record_additional_context(&mut additional_context, &spec.name, text);
                     }
                     record_ask(&mut pending_ask, &spec.name, reason);
-                    run_results.push(HookRunResult::Success {
-                        hook_name: spec.name.clone(),
+                    run_results.push(HookRunResult::with_message(
+                        spec.name.clone(),
                         elapsed,
                         http_info,
                         system_message,
-                    });
+                    ));
                 }
                 HookRunnerResult::Defer => {
                     tracing::info!(
@@ -221,12 +221,12 @@ async fn dispatch_sequential_gate(
                         "hook deferred"
                     );
                     deferring_hook = Some(spec.name.clone());
-                    run_results.push(HookRunResult::Success {
-                        hook_name: spec.name.clone(),
+                    run_results.push(HookRunResult::with_message(
+                        spec.name.clone(),
                         elapsed,
                         http_info,
                         system_message,
-                    });
+                    ));
                 }
                 HookRunnerResult::Failed(err) => {
                     tracing::warn!(
@@ -245,18 +245,19 @@ async fn dispatch_sequential_gate(
                 }
                 HookRunnerResult::Success
                 | HookRunnerResult::Stop(_)
-                | HookRunnerResult::PostToolUse { .. } => {
+                | HookRunnerResult::PostToolUse { .. }
+                | HookRunnerResult::Observe { .. } => {
                     tracing::info!(
                         hook_name = %spec.name,
                         elapsed_ms = elapsed.as_millis() as u64,
                         "hook completed"
                     );
-                    run_results.push(HookRunResult::Success {
-                        hook_name: spec.name.clone(),
+                    run_results.push(HookRunResult::with_message(
+                        spec.name.clone(),
                         elapsed,
                         http_info,
                         system_message,
-                    });
+                    ));
                 }
             }
         }
@@ -389,6 +390,10 @@ pub struct StopDispatchResult {
     pub additional_context: Vec<String>,
     pub prevent_continuation: Option<StopBlock>,
     pub results: Vec<HookRunResult>,
+    /// Last non-empty `sessionTitle` from a stop hook.
+    pub session_title: Option<String>,
+    /// Last allowlisted `terminalSequence` from a stop hook.
+    pub terminal_sequence: Option<String>,
 }
 
 impl StopDispatchResult {
@@ -434,6 +439,12 @@ impl StopDispatchResult {
         if let Some(context) = signals.additional_context {
             self.additional_context.push(context);
         }
+        if let Some(title) = signals.session_title {
+            self.session_title = Some(title);
+        }
+        if let Some(seq) = signals.terminal_sequence {
+            self.terminal_sequence = Some(seq);
+        }
     }
 }
 
@@ -442,6 +453,8 @@ pub struct StopSignals {
     pub block_reason: Option<String>,
     pub stop_reason: Option<String>,
     pub additional_context: Option<String>,
+    pub session_title: Option<String>,
+    pub terminal_sequence: Option<String>,
 }
 
 pub fn stop_detail(
@@ -533,6 +546,8 @@ pub async fn dispatch_stop(
                             elapsed,
                             http_info,
                             system_message,
+                            session_title: outcome.session_title.clone(),
+                            terminal_sequence: outcome.terminal_sequence.clone(),
                         }),
                     }
                     out.absorb(
@@ -545,6 +560,8 @@ pub async fn dispatch_stop(
                                     .unwrap_or_else(|| "stopped by hook".to_string())
                             }),
                             additional_context: outcome.additional_context,
+                            session_title: outcome.session_title,
+                            terminal_sequence: outcome.terminal_sequence,
                         },
                     );
                 }
@@ -569,13 +586,14 @@ pub async fn dispatch_stop(
                 | HookRunnerResult::Defer
                 | HookRunnerResult::Deny { .. }
                 | HookRunnerResult::Block { .. }
-                | HookRunnerResult::PostToolUse { .. } => {
-                    out.results.push(HookRunResult::Success {
-                        hook_name: spec.name.clone(),
+                | HookRunnerResult::PostToolUse { .. }
+                | HookRunnerResult::Observe { .. } => {
+                    out.results.push(HookRunResult::with_message(
+                        spec.name.clone(),
                         elapsed,
                         http_info,
                         system_message,
-                    });
+                    ));
                 }
             }
         }
@@ -784,12 +802,12 @@ pub async fn dispatch_post_tool_use(
                             http_info,
                             system_message,
                         },
-                        None => HookRunResult::Success {
-                            hook_name: spec.name.clone(),
+                        None => HookRunResult::with_message(
+                            spec.name.clone(),
                             elapsed,
                             http_info,
                             system_message,
-                        },
+                        ),
                     });
                     let run_index = out.results.len() - 1;
                     out.absorb(&spec.name, run_index, outcome);
@@ -815,13 +833,14 @@ pub async fn dispatch_post_tool_use(
                 | HookRunnerResult::Defer
                 | HookRunnerResult::Deny { .. }
                 | HookRunnerResult::Block { .. }
-                | HookRunnerResult::Stop(_) => {
-                    out.results.push(HookRunResult::Success {
-                        hook_name: spec.name.clone(),
+                | HookRunnerResult::Stop(_)
+                | HookRunnerResult::Observe { .. } => {
+                    out.results.push(HookRunResult::with_message(
+                        spec.name.clone(),
                         elapsed,
                         http_info,
                         system_message,
-                    });
+                    ));
                 }
             }
         }
@@ -891,12 +910,12 @@ pub async fn dispatch_post_tool_use_failure(
                             http_info,
                             system_message,
                         },
-                        None => HookRunResult::Success {
-                            hook_name: spec.name.clone(),
+                        None => HookRunResult::with_message(
+                            spec.name.clone(),
                             elapsed,
                             http_info,
                             system_message,
-                        },
+                        ),
                     });
                 }
                 HookRunnerResult::Failed(err) => {
@@ -920,13 +939,14 @@ pub async fn dispatch_post_tool_use_failure(
                 | HookRunnerResult::Defer
                 | HookRunnerResult::Deny { .. }
                 | HookRunnerResult::Block { .. }
-                | HookRunnerResult::Stop(_) => {
-                    out.results.push(HookRunResult::Success {
-                        hook_name: spec.name.clone(),
+                | HookRunnerResult::Stop(_)
+                | HookRunnerResult::Observe { .. } => {
+                    out.results.push(HookRunResult::with_message(
+                        spec.name.clone(),
                         elapsed,
                         http_info,
                         system_message,
-                    });
+                    ));
                 }
             }
         }
@@ -978,11 +998,26 @@ pub async fn dispatch_non_blocking(
                         elapsed_ms = elapsed.as_millis() as u64,
                         "hook completed"
                     );
+                    results.push(HookRunResult::with_message(
+                        spec.name.clone(),
+                        elapsed,
+                        http_info,
+                        system_message,
+                    ));
+                }
+                HookRunnerResult::Observe { effects } => {
+                    tracing::info!(
+                        hook_name = %spec.name,
+                        elapsed_ms = elapsed.as_millis() as u64,
+                        "hook completed with observe effects"
+                    );
                     results.push(HookRunResult::Success {
                         hook_name: spec.name.clone(),
                         elapsed,
                         http_info,
                         system_message,
+                        session_title: effects.session_title,
+                        terminal_sequence: effects.terminal_sequence,
                     });
                 }
                 HookRunnerResult::Failed(err) => {
@@ -1010,12 +1045,12 @@ pub async fn dispatch_non_blocking(
                         elapsed_ms = elapsed.as_millis() as u64,
                         "hook completed"
                     );
-                    results.push(HookRunResult::Success {
-                        hook_name: spec.name.clone(),
+                    results.push(HookRunResult::with_message(
+                        spec.name.clone(),
                         elapsed,
                         http_info,
                         system_message,
-                    });
+                    ));
                 }
                 HookRunnerResult::Stop(_) | HookRunnerResult::PostToolUse { .. } => {
                     results.push(HookRunResult::Failed {
@@ -2014,6 +2049,162 @@ mod tests {
         assert!(!result.wants_continuation());
     }
 
+    #[test]
+    fn feedback_names_blocks_and_context_and_ignores_the_title() {
+        let mut out = StopDispatchResult::default();
+        out.absorb(
+            "t",
+            StopSignals {
+                block_reason: Some("fix tests".into()),
+                additional_context: Some("note".into()),
+                session_title: Some("parked-arx-console".into()),
+                ..Default::default()
+            },
+        );
+        let feedback = out.feedback();
+        assert!(feedback.contains("fix tests"), "{feedback}");
+        assert!(feedback.contains("note"), "{feedback}");
+        assert!(
+            !feedback.contains("parked-arx-console"),
+            "a session title is not stop feedback: {feedback}"
+        );
+        assert!(out.wants_continuation());
+        assert_eq!(out.session_title.as_deref(), Some("parked-arx-console"));
+    }
+
+    #[tokio::test]
+    async fn stop_title_only_does_not_force_continuation() {
+        let registry = registry_from_specs(vec![stop_spec(
+            "title",
+            "echo '{\"hookSpecificOutput\":{\"sessionTitle\":\"parked-arx-console\"}}'",
+        )]);
+        let result =
+            dispatch_stop(&registry, HookEventName::Stop, &stop_envelope(), &run_ctx()).await;
+        assert!(
+            !result.wants_continuation(),
+            "a title-only stop hook must not keep the turn alive"
+        );
+        assert!(result.blocks.is_empty());
+        assert!(result.additional_context.is_empty());
+        assert!(result.prevent_continuation.is_none());
+        assert_eq!(result.session_title.as_deref(), Some("parked-arx-console"));
+        assert!(result.feedback().is_empty());
+        assert!(
+            matches!(result.results.first(), Some(HookRunResult::Success { .. })),
+            "title-only stop stays a success, got {:?}",
+            result.results.first()
+        );
+    }
+
+    #[tokio::test]
+    async fn stop_block_or_context_with_title_still_continues_and_veto_still_wins() {
+        let registry = registry_from_specs(vec![stop_spec(
+            "both",
+            "echo '{\"decision\":\"block\",\"reason\":\"fix tests\",\"hookSpecificOutput\":{\"sessionTitle\":\"parked\",\"additionalContext\":\"note\"}}'",
+        )]);
+        let result =
+            dispatch_stop(&registry, HookEventName::Stop, &stop_envelope(), &run_ctx()).await;
+        assert!(result.wants_continuation());
+        assert_eq!(result.blocks.len(), 1);
+        assert_eq!(result.additional_context, ["note"]);
+        assert_eq!(result.session_title.as_deref(), Some("parked"));
+        assert!(
+            matches!(result.results.first(), Some(HookRunResult::Blocked { .. })),
+            "a blocking stop stays blocked with a title, got {:?}",
+            result.results.first()
+        );
+        assert!(result.feedback().contains("fix tests"));
+        assert!(result.feedback().contains("note"));
+
+        let registry = registry_from_specs(vec![stop_spec(
+            "veto",
+            "echo '{\"continue\":false,\"stopReason\":\"budget\",\"hookSpecificOutput\":{\"sessionTitle\":\"parked\"}}'",
+        )]);
+        let result =
+            dispatch_stop(&registry, HookEventName::Stop, &stop_envelope(), &run_ctx()).await;
+        assert!(!result.wants_continuation(), "continue:false still vetoes");
+        assert_eq!(
+            result
+                .prevent_continuation
+                .as_ref()
+                .map(|block| block.reason.as_str()),
+            Some("budget")
+        );
+        assert_eq!(result.session_title.as_deref(), Some("parked"));
+    }
+
+    #[tokio::test]
+    async fn stop_last_nonempty_title_and_allowlisted_sequence_win() {
+        let registry = registry_from_specs(vec![
+            stop_spec(
+                "first",
+                "echo '{\"hookSpecificOutput\":{\"sessionTitle\":\"alpha\",\"terminalSequence\":\"\\u001b]0;alpha\\u0007\"}}'",
+            ),
+            stop_spec(
+                "blank",
+                "echo '{\"hookSpecificOutput\":{\"sessionTitle\":\"   \",\"terminalSequence\":\"\\u001b]52;c;QUFB\\u0007\"}}'",
+            ),
+            stop_spec(
+                "last",
+                "echo '{\"hookSpecificOutput\":{\"sessionTitle\":\"beta\",\"terminalSequence\":\"\\u001b]1;beta\\u0007\"}}'",
+            ),
+        ]);
+        let result =
+            dispatch_stop(&registry, HookEventName::Stop, &stop_envelope(), &run_ctx()).await;
+        assert!(!result.wants_continuation());
+        assert_eq!(result.session_title.as_deref(), Some("beta"));
+        assert_eq!(
+            result.terminal_sequence.as_deref(),
+            Some("\u{1b}]1;beta\u{07}")
+        );
+    }
+
+    #[tokio::test]
+    async fn observe_dispatch_keeps_last_nonempty_title_for_the_host_fold() {
+        let mut specs = Vec::new();
+        for (name, body) in [
+            (
+                "alpha",
+                "echo '{\"hookSpecificOutput\":{\"sessionTitle\":\"alpha\",\"terminalSequence\":\"\\u001b]0;alpha\\u0007\"}}'",
+            ),
+            ("blank", "echo 'not json'"),
+            ("empty-title", "echo '{\"hookSpecificOutput\":{\"sessionTitle\":\"  \"}}'"),
+            (
+                "beta",
+                "echo '{\"hookSpecificOutput\":{\"sessionTitle\":\"beta\"}}'",
+            ),
+        ] {
+            let mut spec = make_command_spec(name, None, true, body);
+            spec.event = HookEventName::SessionStart;
+            specs.push(spec);
+        }
+        let registry = registry_from_specs(specs);
+        let results = dispatch_non_blocking(
+            &registry,
+            HookEventName::SessionStart,
+            &session_start_envelope(),
+            &run_ctx(),
+        )
+        .await;
+        assert!(
+            results.iter().all(|result| matches!(result, HookRunResult::Success { .. })),
+            "malformed and empty observe output stays fail-open success: {results:?}"
+        );
+        let mut title = None;
+        let mut sequence = None;
+        for result in &results {
+            let effects = result.observe_effects();
+            if effects.session_title.is_some() {
+                title = effects.session_title;
+            }
+            if effects.terminal_sequence.is_some() {
+                sequence = effects.terminal_sequence;
+            }
+        }
+        assert_eq!(title.as_deref(), Some("beta"));
+        assert_eq!(sequence.as_deref(), Some("\u{1b}]0;alpha\u{07}"));
+    }
+
     #[tokio::test]
     async fn subagent_stop_consults_alias_specs() {
         let mut canonical = make_command_spec(
@@ -2370,11 +2561,8 @@ mod tests {
 
     #[test]
     fn merge_appends_results_blocks_and_context() {
-        let success = |name: &str| HookRunResult::Success {
-            hook_name: name.to_string(),
-            elapsed: std::time::Duration::ZERO,
-            http_info: None,
-            system_message: None,
+        let success = |name: &str| {
+            HookRunResult::with_message(name.to_string(), std::time::Duration::ZERO, None, None)
         };
         let block = |name: &str| PostToolUseBlock {
             hook_name: name.to_string(),

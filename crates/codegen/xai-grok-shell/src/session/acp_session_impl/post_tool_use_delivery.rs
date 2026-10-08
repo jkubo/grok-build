@@ -57,6 +57,7 @@ fn downgrade_run(results: &mut [HookRunResult], rejection: RejectedReplacement) 
             elapsed,
             http_info,
             system_message,
+            ..
         } = slot
     {
         *slot = HookRunResult::Failed {

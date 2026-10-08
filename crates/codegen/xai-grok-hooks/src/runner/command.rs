@@ -27,7 +27,8 @@ use crate::result::StopHookOutcome;
 use super::{
     GateHookJson, GateKind, GateOutcome, HookHealth, HookRunnerResult, PostToolUseHookJson,
     PostToolUseParse, PromptHookJson, RunContext, StopHookJson, extract_system_message,
-    gate_outcome, post_tool_use_json_to_outcome, prompt_json_to_block, stop_json_to_outcome,
+    gate_outcome, parse_observe_effects, post_tool_use_json_to_outcome, prompt_json_to_block,
+    stop_json_to_outcome,
 };
 
 const CAPTURE_HEADROOM_OVER_REPLACEMENT: usize = 16;
@@ -330,7 +331,12 @@ pub async fn run_command_hook(
             let (result, elapsed) = match mode {
                 GateKind::Observe => {
                     if exit_code == 0 {
-                        (HookRunnerResult::Success, elapsed)
+                        let effects = parse_observe_effects(stdout.as_bytes());
+                        if effects.is_empty() {
+                            (HookRunnerResult::Success, elapsed)
+                        } else {
+                            (HookRunnerResult::Observe { effects }, elapsed)
+                        }
                     } else {
                         (failed_with_exit_code(exit_code, &stderr), elapsed)
                     }
@@ -1413,6 +1419,21 @@ mod tests {
     }
 
     #[test]
+    fn deny_plus_session_title_stays_deny() {
+        let (result, _) = parse_blocking_result(
+            r#"{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"nope","sessionTitle":"parked-arx-console","terminalSequence":"\u001b]0;parked\u0007"}}"#,
+            "",
+            0,
+            "test",
+            Duration::ZERO,
+        );
+        match result {
+            HookRunnerResult::Deny { reason, .. } => assert_eq!(reason, "nope"),
+            other => panic!("deny plus title must remain deny, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn deny_reason_and_stderr_excerpt_are_capped() {
         let long = "é".repeat(MAX_REASON_CHARS + 50);
         let capped = format!("{}… [+50 chars]", "é".repeat(MAX_REASON_CHARS));
@@ -1574,6 +1595,40 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn observe_malformed_or_empty_stdout_fails_open() {
+        for script in [
+            "echo -n",
+            "echo not-json",
+            "echo '{'",
+            "echo '{\"hookSpecificOutput\":{\"sessionTitle\":\"   \"}}'",
+        ] {
+            let spec = make_shell_spec(script);
+            let (result, _, _) =
+                run_command_hook(&spec, &make_envelope(), &make_ctx(), GateKind::Observe).await;
+            assert!(
+                matches!(result, HookRunnerResult::Success),
+                "{script} must fail open, got {result:?}"
+            );
+        }
+        let spec = make_shell_spec(
+            r#"echo '{"hookSpecificOutput":{"sessionTitle":"kept","terminalSequence":"\u001b]0;kept\u0007"}}'"#,
+        );
+        let (result, _, _) =
+            run_command_hook(&spec, &make_envelope(), &make_ctx(), GateKind::Observe).await;
+        match result {
+            HookRunnerResult::Observe { effects } => {
+                assert_eq!(effects.session_title.as_deref(), Some("kept"));
+                assert_eq!(
+                    effects.terminal_sequence.as_deref(),
+                    Some("\u{1b}]0;kept\u{07}")
+                );
+            }
+            other => panic!("expected observe effects, got {other:?}"),
+        }
+    }
+
     #[test]
     fn json_decision_vs_exit_code() {
         let (deny, _) = parse_blocking_result(
@@ -1704,6 +1759,28 @@ mod tests {
         );
         let (result, _) = parse_stop_result(r#"{"continue":true}"#, "", 0, "s", Duration::ZERO);
         assert!(stop_outcome(result).is_empty());
+    }
+
+    #[test]
+    fn observe_json_harvests_session_title_and_allowlisted_osc() {
+        let effects = super::parse_observe_effects(
+            br#"{"hookSpecificOutput":{"sessionTitle":"parked-arx-console","terminalSequence":"\u001b]0;parked-arx-console\u0007"}}"#,
+        );
+        assert_eq!(effects.session_title.as_deref(), Some("parked-arx-console"));
+        assert!(
+            effects
+                .terminal_sequence
+                .as_deref()
+                .unwrap()
+                .starts_with("\u{1b}]0;")
+        );
+
+        let rejected = super::parse_observe_effects(
+            br#"{"hookSpecificOutput":{"terminalSequence":"\u001b]52;c;QUFB\u0007"}}"#,
+        );
+        assert!(rejected.terminal_sequence.is_none());
+        let empty = super::parse_observe_effects(b"not json");
+        assert!(empty.is_empty());
     }
 
     #[test]

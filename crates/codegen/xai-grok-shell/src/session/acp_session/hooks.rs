@@ -436,12 +436,12 @@ impl SessionActor {
                     http_info: None,
                     system_message: None,
                 },
-                (None, None) => HookRunResult::Success {
-                    hook_name: hook_name.clone(),
+                (None, None) => HookRunResult::with_message(
+                    hook_name.clone(),
                     elapsed,
-                    http_info: None,
-                    system_message: None,
-                },
+                    None,
+                    None,
+                ),
             });
 
             out.absorb(
@@ -453,6 +453,8 @@ impl SessionActor {
                         .additional_context
                         .filter(|c| !c.trim().is_empty())
                         .map(|c| clip_text(&c, MAX_HOOK_FEEDBACK_CHARS)),
+                    session_title: None,
+                    terminal_sequence: None,
                 },
             );
         }
@@ -494,12 +496,12 @@ impl SessionActor {
                 });
                 continue;
             }
-            out.results.push(HookRunResult::Success {
-                hook_name: hook_name.clone(),
+            out.results.push(HookRunResult::with_message(
+                hook_name.clone(),
                 elapsed,
-                http_info: None,
-                system_message: None,
-            });
+                None,
+                None,
+            ));
             if response.decision == ClientHookDecision::Deny {
                 let reason = response
                     .system_message
